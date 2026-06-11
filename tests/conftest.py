@@ -50,6 +50,16 @@ def project(tmp_path: Path) -> ProjectPaths:
     )
 
 
+def install_bmad_config(paths: ProjectPaths) -> None:
+    """Write the _bmad/bmm/config.yaml that bmadconfig.load_paths resolves."""
+    cfg = paths.project / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text(
+        "implementation_artifacts: '{project-root}/_bmad-output/implementation-artifacts'\n"
+        "planning_artifacts: '{project-root}/_bmad-output/planning-artifacts'\n"
+    )
+
+
 def write_sprint(paths: ProjectPaths, statuses: dict[str, str]) -> None:
     doc = dict(SPRINT_TEMPLATE)
     doc["development_status"] = dict(statuses)

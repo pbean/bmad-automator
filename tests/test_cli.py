@@ -4,7 +4,7 @@ import argparse
 import json
 
 from automator import cli, policy as policy_mod
-from conftest import write_sprint
+from conftest import install_bmad_config, write_sprint
 
 DUAL_CLIENT_POLICY = """\
 [adapter]
@@ -84,15 +84,6 @@ def test_sweep_dry_run_no_ledger(project, capsys):
     assert "no deferred-work ledger" in capsys.readouterr().out
 
 
-def _install_bmad_config(project) -> None:
-    cfg = project.project / "_bmad" / "bmm"
-    cfg.mkdir(parents=True)
-    (cfg / "config.yaml").write_text(
-        "implementation_artifacts: '{project-root}/_bmad-output/implementation-artifacts'\n"
-        "planning_artifacts: '{project-root}/_bmad-output/planning-artifacts'\n"
-    )
-
-
 class _StubEngine:
     def __init__(self, **kwargs):
         pass
@@ -112,7 +103,7 @@ def test_run_honors_preassigned_run_id_and_writes_pid(project, monkeypatch):
 
     from conftest import git
 
-    _install_bmad_config(project)
+    install_bmad_config(project)
     write_sprint(project, {"1-1-a": "ready-for-dev"})
     git(project.project, "add", "-A")
     git(project.project, "commit", "-q", "-m", "setup")

@@ -14,7 +14,8 @@ dependencies = ["pyyaml>=6.0"]
 bmad-auto = "automator.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+tui = ["textual>=8.0,<9", "tomlkit>=0.13"]
+dev = ["pytest>=8.0", "ruff>=0.4", "pytest-asyncio>=1.0", "bmad-automator[tui]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -24,6 +25,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
