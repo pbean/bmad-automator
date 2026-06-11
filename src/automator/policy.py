@@ -132,13 +132,21 @@ def _stage_adapter(adapter_d: dict[str, Any], key: str) -> StageAdapterPolicy:
 
 
 def load(path: Path | None) -> Policy:
-    """Load policy from TOML; a missing file yields all defaults."""
-    doc: dict[str, Any] = {}
-    if path is not None and path.is_file():
-        try:
-            doc = tomllib.loads(path.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError as e:
-            raise PolicyError(f"invalid policy TOML: {path}: {e}") from e
+    """Load policy from a TOML file; a missing file yields all defaults."""
+    if path is None or not path.is_file():
+        return loads("")
+    try:
+        return loads(path.read_text(encoding="utf-8"))
+    except PolicyError as e:
+        raise PolicyError(f"{path}: {e}") from e
+
+
+def loads(text: str) -> Policy:
+    """Parse and validate policy TOML text; empty text yields all defaults."""
+    try:
+        doc: dict[str, Any] = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise PolicyError(f"invalid policy TOML: {e}") from e
 
     gates_d = _section(doc, "gates")
     limits_d = _section(doc, "limits")

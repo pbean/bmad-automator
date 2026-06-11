@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import secrets
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from . import __version__, bmadconfig, deferredwork, policy as policy_mod, sprintstatus, verify
+from . import (
+    __version__,
+    bmadconfig,
+    deferredwork,
+    policy as policy_mod,
+    runs,
+    sprintstatus,
+    verify,
+)
 from .adapters.base import CodingCLIAdapter
 from .engine import Engine
 from .journal import Journal, load_state, save_state
 from .model import RunState
+from .runs import RUNS_DIR
 from .sweep import SweepEngine
 
-RUNS_DIR = Path(".automator") / "runs"
 POLICY_FILE = Path(".automator") / "policy.toml"
 
 
@@ -52,18 +58,6 @@ def _make_adapters(project: Path, run_dir: Path, policy) -> dict[str, CodingCLIA
             )
         adapters[role] = by_cfg[cfg]
     return adapters
-
-
-def _new_run_id() -> str:
-    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
-
-
-def _latest_run_dir(project: Path) -> Path | None:
-    runs = project / RUNS_DIR
-    if not runs.is_dir():
-        return None
-    candidates = sorted(d for d in runs.iterdir() if (d / "state.json").is_file())
-    return candidates[-1] if candidates else None
 
 
 # ----------------------------------------------------------------- commands
@@ -167,7 +161,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("git worktree is not clean — commit or stash first", file=sys.stderr)
         return 1
 
-    run_id = _new_run_id()
+    run_id = args.run_id or runs.new_run_id()
     run_dir = project / RUNS_DIR / run_id
     journal = Journal(run_dir)
     state = RunState(
@@ -177,6 +171,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         policy_snapshot=pol.to_dict(),
     )
     save_state(run_dir, state)
+    runs.write_pid(run_dir)
     adapters = _make_adapters(project, run_dir, pol)
     journal.append(
         "run-start",
@@ -251,8 +246,9 @@ def _start_sweep(
     decisions_only: bool,
     max_bundles: int | None,
     trigger: str,
+    run_id: str | None = None,
 ) -> int:
-    run_id = _new_run_id()
+    run_id = run_id or runs.new_run_id()
     run_dir = project / RUNS_DIR / run_id
     journal = Journal(run_dir)
     state = RunState(
@@ -263,6 +259,7 @@ def _start_sweep(
         run_type="sweep",
     )
     save_state(run_dir, state)
+    runs.write_pid(run_dir)
     options = {
         "prompting": prompting,
         "decisions_only": decisions_only,
@@ -330,6 +327,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         decisions_only=args.decisions_only,
         max_bundles=args.max_bundles,
         trigger="cli",
+        run_id=args.run_id,
     )
 
 
@@ -365,6 +363,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     journal = Journal(run_dir)
     journal.append("run-resume", was_paused=state.paused_reason)
     state.clear_pause()
+    runs.write_pid(run_dir)
     adapters = _make_adapters(project, run_dir, pol)
     if state.run_type == "sweep":
         opts_path = run_dir / "sweep.json"
@@ -403,7 +402,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if args.run_id:
         run_dir = project / RUNS_DIR / args.run_id
     else:
-        run_dir = _latest_run_dir(project)
+        run_dir = runs.latest_run_dir(project)
     if run_dir is None or not (run_dir / "state.json").is_file():
         print("no runs found", file=sys.stderr)
         return 1
@@ -436,17 +435,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_attach(args: argparse.Namespace) -> int:
     project = _project(args)
     run_dir = (
-        project / RUNS_DIR / args.run_id if args.run_id else _latest_run_dir(project)
+        project / RUNS_DIR / args.run_id if args.run_id else runs.latest_run_dir(project)
     )
     if run_dir is None:
         print("no runs found", file=sys.stderr)
         return 1
-    session = f"bmad-auto-{run_dir.name}"
-    if os.environ.get("TMUX"):
-        # already inside tmux: nesting is refused, switch this client instead
-        # (tmux switch-client -l comes back)
-        return subprocess.call(["tmux", "switch-client", "-t", f"={session}"])
-    return subprocess.call(["tmux", "attach", "-t", session])
+    return subprocess.call(runs.attach_argv(run_dir.name))
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -491,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--story", help="only this story key")
     run_p.add_argument("--max-stories", type=int, help="stop after N stories")
     run_p.add_argument("--dry-run", action="store_true", help="print the plan, spawn nothing")
+    run_p.add_argument("--run-id", help=argparse.SUPPRESS)  # pre-assigned id (used by the TUI)
 
     sweep_p = add("sweep", cmd_sweep, "triage + execute open deferred-work.md entries")
     sweep_p.add_argument(
@@ -507,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     sweep_p.add_argument(
         "--dry-run", action="store_true", help="list open ledger entries, spawn nothing"
     )
+    sweep_p.add_argument("--run-id", help=argparse.SUPPRESS)  # pre-assigned id (used by the TUI)
 
     resume_p = add("resume", cmd_resume, "resume a paused run")
     resume_p.add_argument("run_id")

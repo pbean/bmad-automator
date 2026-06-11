@@ -293,6 +293,12 @@ def test_interactive_decisions_build_and_close(project):
     summary = engine.run()
     assert not summary.paused
 
+    journal = journal_text(engine)
+    assert journal.count('"decision-pending"') == 2  # announced before each prompt
+    assert journal.index('"decision-pending"') < journal.index('"decision-answered"')
+    attention = (engine.run_dir / "ATTENTION").read_text()
+    assert "decision needed: DW-1" in attention
+
     answers = json.loads((engine.run_dir / "decisions.json").read_text())
     assert answers["DW-1"]["effect"] == "build"
     assert answers["DW-2"]["effect"] == "close"

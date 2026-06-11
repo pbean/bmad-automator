@@ -84,6 +84,48 @@ def test_sweep_dry_run_no_ledger(project, capsys):
     assert "no deferred-work ledger" in capsys.readouterr().out
 
 
+def _install_bmad_config(project) -> None:
+    cfg = project.project / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text(
+        "implementation_artifacts: '{project-root}/_bmad-output/implementation-artifacts'\n"
+        "planning_artifacts: '{project-root}/_bmad-output/planning-artifacts'\n"
+    )
+
+
+class _StubEngine:
+    def __init__(self, **kwargs):
+        pass
+
+    def run(self):
+        class Summary:
+            paused = False
+
+            def render(self):
+                return "stub summary"
+
+        return Summary()
+
+
+def test_run_honors_preassigned_run_id_and_writes_pid(project, monkeypatch):
+    import os
+
+    from conftest import git
+
+    _install_bmad_config(project)
+    write_sprint(project, {"1-1-a": "ready-for-dev"})
+    git(project.project, "add", "-A")
+    git(project.project, "commit", "-q", "-m", "setup")
+    monkeypatch.setattr(cli, "Engine", _StubEngine)
+    monkeypatch.setattr(cli, "_make_adapters", lambda *a, **k: {r: None for r in cli.ROLES})
+
+    run_id = "20990101-000000-beef"
+    assert cli.main(["run", "--project", str(project.project), "--run-id", run_id]) == 0
+    run_dir = project.project / ".automator" / "runs" / run_id
+    assert json.loads((run_dir / "state.json").read_text())["run_id"] == run_id
+    assert (run_dir / "engine.pid").read_text() == str(os.getpid())
+
+
 def test_sweep_command_parses_flags():
     parser_args = [
         "sweep", "--project", ".", "--no-prompt", "--decisions-only",

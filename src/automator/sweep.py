@@ -460,6 +460,17 @@ class SweepEngine(Engine):
                 )
         else:
             for decision in pending:
+                # announce before blocking on input so observers (TUI, ATTENTION
+                # watchers) can tell a sweep is waiting on a human
+                self.journal.append(
+                    "decision-pending", dw_id=decision.id, question=decision.question
+                )
+                gates.notify(
+                    self.policy,
+                    self.run_dir,
+                    f"decision needed: {decision.id}",
+                    decision.question,
+                )
                 option = self.prompter.ask(decision)
                 answers[decision.id] = {
                     "key": option.key,

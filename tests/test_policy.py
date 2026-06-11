@@ -133,6 +133,23 @@ def test_bad_toml(tmp_path):
         policy.load(p)
 
 
+def test_loads_defaults_and_text():
+    assert policy.loads("").gates.mode == policy.GatesPolicy.mode
+    assert policy.loads('[gates]\nmode = "none"\n').gates.mode == "none"
+
+
+def test_loads_validates():
+    with pytest.raises(policy.PolicyError, match="gates.mode"):
+        policy.loads('[gates]\nmode = "sometimes"\n')
+
+
+def test_load_prefixes_path_in_errors(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text('[gates]\nmode = "sometimes"\n')
+    with pytest.raises(policy.PolicyError, match=r"policy\.toml.*gates\.mode"):
+        policy.load(p)
+
+
 def test_zero_budget_rejected(tmp_path):
     p = tmp_path / "policy.toml"
     p.write_text("[limits]\nmax_dev_attempts = 0\n")
