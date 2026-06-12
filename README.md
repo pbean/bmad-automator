@@ -21,7 +21,7 @@ Plain Python drives the loop — **pick story → implement → adversarially re
 
 ## Why bmad-auto
 
-It's a token-optimized replacement for [bmad-automator](https://github.com/bmad-code-org/bmad-automator), whose orchestrator is _itself_ an LLM session interpreting prose rules and screen-scraping tmux panes. Here the orchestrator is ordinary code:
+Inspired by the official [bmad-automator](https://github.com/bmad-code-org/bmad-automator), it takes a token-optimized approach in which the orchestrator is ordinary code rather than an LLM session in the control loop:
 
 - 🧠 **No LLM in the control loop.** Story selection, retry budgets, gates, and completion checks are code, not prompts — so they're deterministic, debuggable, and free.
 - 📡 **No pane-scraping.** Coding-agent hooks (`Stop` / `SessionStart` / `SessionEnd` / `PreCompact`) write structured event files the orchestrator watches; skills in automation mode write a machine-readable `result.json` at the end of each workflow.
