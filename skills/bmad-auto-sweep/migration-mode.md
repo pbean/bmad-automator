@@ -56,10 +56,10 @@ commits the migrated ledger after validating it.
    - `reason:` — the substance of the original bullet, condensed but lossless
      enough that a future dev session can act on it. Long forensic detail may
      follow as body lines under the fields.
-   - `status: open`, or for done items `status: done <original date if
-     recoverable, else today>` plus a `resolution:` line carrying the
-     original resolution text when one exists (e.g. the text after `→` or a
-     `**Resolution:**` field).
+   - `status: open`, or for done items `status: done <date>` using the
+     original completion date when recoverable (else today), plus a
+     `resolution:` line carrying the original resolution text when one
+     exists (e.g. the text after `→` or a `**Resolution:**` field).
 4. Two manifest items describing the same underlying issue (e.g. a duplicate
    `W1` re-raised in a later review) may merge into ONE DW entry — map both
    keys to the same `dw_id`. Merge only when their `done` flags match.
