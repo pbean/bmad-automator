@@ -153,6 +153,10 @@ Launch and attach need tmux, the dashboard itself does not. Pid-based liveness
 is local-only: a run whose engine died shows `interrupted` (press `e`), runs
 on other hosts show `unknown`.
 
+See [docs/tui-guide.md](docs/tui-guide.md) for the full guide — layout, every
+key and modal, status glyphs, the settings field reference, and
+troubleshooting.
+
 ## Policy (`.automator/policy.toml`)
 
 ```toml
