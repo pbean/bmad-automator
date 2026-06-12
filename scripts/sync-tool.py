@@ -6,8 +6,8 @@ Python package (root `src/`, `pyproject.toml`, `README.md`) AND the distributabl
 BMAD plugin under `module/`. The plugin ships an installable copy of the tool in
 `module/tool/` because `bmad-auto-setup` runs `pip install "<skill-dir>/../tool"`.
 
-Distribution is the raw git tree (marketplace.json `source: "./"`), so the copy
-must physically exist under `module/tool/`. To stop it drifting from the canonical
+Distribution is the raw git tree (root marketplace.json `source: "./module"`), so
+the copy must physically exist under `module/tool/`. To stop it drifting from the canonical
 source, it is *generated* by this script and verified in CI:
 
     python scripts/sync-tool.py           # regenerate module/tool/ from the source

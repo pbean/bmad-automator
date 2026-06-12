@@ -5,22 +5,22 @@
   },
   "license": "MIT",
   "homepage": "",
-  "repository": "",
+  "repository": "https://github.com/pbean/bmad-automator",
   "keywords": ["bmad", "bmad-auto", "automation"],
   "plugins": [
     {
       "name": "bauto",
-      "source": "./",
+      "source": "./module",
       "description": "Automation-mode skills driven by the bmad-auto orchestrator: unattended dev (bmad-auto-dev), adversarial review (bmad-auto-review), and deferred-work sweep triage (bmad-auto-sweep)",
       "version": "1.0.0",
       "author": {
         "name": "pinkyd"
       },
       "skills": [
-        "./bmad-auto-setup",
-        "./bmad-auto-dev",
-        "./bmad-auto-review",
-        "./bmad-auto-sweep"
+        "./module/bmad-auto-setup",
+        "./module/bmad-auto-dev",
+        "./module/bmad-auto-review",
+        "./module/bmad-auto-sweep"
       ]
     }
   ]
