@@ -10,10 +10,15 @@ Distribution is the raw git tree (root marketplace.json `source: "./module"`), s
 the copy must physically exist under `module/tool/`. To stop it drifting from the canonical
 source, it is *generated* by this script and verified in CI:
 
-    python scripts/sync-tool.py           # regenerate module/tool/ from the source
-    python scripts/sync-tool.py --check   # fail (exit 1) if module/tool/ is stale
+    python scripts/sync-tool.py           # regenerate generated copies from source
+    python scripts/sync-tool.py --check   # fail (exit 1) if any copy is stale
 
-`src/` is the single source of truth; never hand-edit module/tool/.
+It also generates a repo-root `module.yaml` mirror of the setup skill's
+`assets/module.yaml` so the BMAD installer can locate the module descriptor
+(its lookup checks <repo>/module.yaml but not the marketplace `source` subdir).
+
+`src/` and `module/bmad-auto-setup/assets/module.yaml` are the single sources of
+truth; never hand-edit module/tool/ or the repo-root module.yaml.
 """
 
 from __future__ import annotations
@@ -35,6 +40,17 @@ FILE_MAP = {
 
 # Package tree copied from src/<pkg> into module/tool/src/<pkg>.
 PKG = "automator"
+
+# Repo-root mirror of the canonical module descriptor. bmad-method's installer
+# locates a module's module.yaml through hardcoded roots (<repo>/skills, /src,
+# /src/skills, and <repo>/module.yaml) and does NOT honor the marketplace
+# `source: "./module"` subdir. Without a copy at the repo root the post-install
+# steps (agent roster + config scoping in config.toml) warn that they "could not
+# locate module.yaml for 'bauto'". The canonical file stays under the setup
+# skill (read at runtime in installed projects); this root copy is generated.
+ROOT_MIRRORS = {
+    REPO / "module" / "bmad-auto-setup" / "assets" / "module.yaml": REPO / "module.yaml",
+}
 
 # Names excluded everywhere (build/runtime debris, never part of the package).
 EXCLUDE_DIRS = {"__pycache__"}
@@ -63,6 +79,8 @@ def _planned_pairs() -> list[tuple[Path, Path]]:
     dst_pkg = DEST / "src" / PKG
     for rel in _iter_pkg_files(src_pkg):
         pairs.append((src_pkg / rel, dst_pkg / rel))
+    for src, dst in ROOT_MIRRORS.items():
+        pairs.append((src, dst))
     return pairs
 
 
@@ -90,12 +108,12 @@ def check() -> int:
     for dst in _stale_dest_files(planned_dests):
         problems.append(f"stale:      {dst.relative_to(REPO)}")
     if problems:
-        print("module/tool/ is out of sync with the canonical source:", file=sys.stderr)
+        print("generated copies are out of sync with the canonical source:", file=sys.stderr)
         for p in problems:
             print(f"  {p}", file=sys.stderr)
         print("\nRun: python scripts/sync-tool.py", file=sys.stderr)
         return 1
-    print("module/tool/ is in sync with the canonical source.")
+    print("generated copies are in sync with the canonical source.")
     return 0
 
 
@@ -112,7 +130,7 @@ def sync() -> int:
     for dst in _stale_dest_files(planned_dests):
         dst.unlink()
         removed += 1
-    print(f"Synced module/tool/ from source: {changed} written, {removed} removed.")
+    print(f"Synced generated copies from source: {changed} written, {removed} removed.")
     return 0
 
 
