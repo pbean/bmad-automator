@@ -1,7 +1,7 @@
 {
   "name": "bauto",
   "owner": {
-    "name": "pbean"
+    "name": "pinkyd"
   },
   "license": "MIT",
   "homepage": "",
@@ -18,7 +18,7 @@
       "description": "Automation-mode skills driven by the bmad-auto orchestrator: unattended dev (bmad-auto-dev), adversarial review (bmad-auto-review), and deferred-work sweep triage (bmad-auto-sweep)",
       "version": "1.0.0",
       "author": {
-        "name": "pbean"
+        "name": "pinkyd"
       },
       "skills": [
         "./bmad-auto-setup",
