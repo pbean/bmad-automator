@@ -1,19 +1,21 @@
 # BMAD Automator module (`bauto`)
 
-A **self-contained** BMAD module: it ships both the automation skills **and** the
-[bmad-auto orchestrator tool](./tool/) (the Python program that drives the loop)
-vendored under [`tool/`](./tool/). Installing this module gives you a working
-system — skills plus the orchestrator that invokes them. Standard BMAD installs
-are never modified; the skills are automator-owned forks maintained against their
-upstream counterparts.
+A BMAD module pairing the automation skills with the
+[bmad-auto orchestrator tool](https://github.com/pbean/bmad-automator) (the
+Python program that drives the loop). The skills are installed by the BMAD
+installer; `bmad-auto-setup` then installs the `bmad-automator` package from its
+Git repository, so installing this module gives you a working system — skills
+plus the orchestrator that invokes them. Standard BMAD installs are never
+modified; the skills are automator-owned forks maintained against their upstream
+counterparts.
 
-| Component           | Forked from          | Role                                                                                                                               |
-| ------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `tool/` (bmad-auto) | — (this repo)        | the orchestrator: ralph-loop, hooks, tmux adapters, TUI. CLI `bmad-auto`.                                                          |
-| `bmad-auto-dev`     | `bmad-quick-dev`     | unattended implementation: story key / feedback file / dw-bundle → spec + code + result.json                                       |
-| `bmad-auto-review`  | `bmad-code-review`   | unattended adversarial review of a dev spec in a fresh context                                                                     |
-| `bmad-auto-sweep`   | — (automator-native) | read-only deferred-work ledger triage                                                                                              |
-| `bmad-auto-setup`   | — (scaffolded)       | registers the module in `_bmad/config.yaml` + `module-help.csv`, **installs the bundled tool**, runs `bmad-auto init` + `validate` |
+| Component          | Forked from          | Role                                                                                                                                             |
+| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bmad-automator`   | — (this repo, Git)   | the orchestrator: ralph-loop, hooks, tmux adapters, TUI. CLI `bmad-auto`. Installed by `bmad-auto-setup` from Git.                               |
+| `bmad-auto-dev`    | `bmad-quick-dev`     | unattended implementation: story key / feedback file / dw-bundle → spec + code + result.json                                                     |
+| `bmad-auto-review` | `bmad-code-review`   | unattended adversarial review of a dev spec in a fresh context                                                                                   |
+| `bmad-auto-sweep`  | — (automator-native) | read-only deferred-work ledger triage                                                                                                            |
+| `bmad-auto-setup`  | — (scaffolded)       | registers the module in `_bmad/config.yaml` + `module-help.csv`, **installs the orchestrator tool from Git**, runs `bmad-auto init` + `validate` |
 
 ## Install into a project
 
@@ -43,10 +45,11 @@ overrides as `bmad-auto-dev.toml` / `bmad-auto-review.toml`.
 - This directory is **canonical** for the skills. The repo's `.claude/skills/`
   and `.agents/skills/` hold copies; `tests/test_module_skills_sync.py` fails if
   they drift. After editing here, re-copy the skill dirs into both trees.
-- The bundled `tool/` is a **vendored copy** of the repo-root orchestrator
-  (`src/automator`, `pyproject.toml`, `README.md` are canonical there).
-  `tests/test_module_tool_sync.py` fails on drift. After editing the tool,
-  re-vendor (see that test's docstring for the exact commands).
+- The orchestrator tool is **not** bundled here — the BMAD installer copies only
+  the skill directories, so a sibling `tool/` would never reach an installed
+  project. `bmad-auto-setup` installs the `bmad-automator` package from
+  <https://github.com/pbean/bmad-automator> (`src/automator`, `pyproject.toml`
+  are canonical at the repo root).
 - The forks keep the upstream file structure. To pull upstream improvements:
   `diff -r <bmad-install>/bmad-quick-dev bmad-auto-dev`, merge manually.
 - Do **not** rename the result.json `workflow` values (`"quick-dev"`,

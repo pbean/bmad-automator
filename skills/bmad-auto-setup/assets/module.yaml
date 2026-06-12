@@ -4,10 +4,11 @@ description: "Automation-mode skills driven by the bmad-auto orchestrator: unatt
 module_version: 1.0.0
 default_selected: false
 module_greeting: >
-  BMAD Automator installed — both the four automation skills and the bundled
+  BMAD Automator installed — both the four automation skills and the
   bmad-auto orchestrator tool (the Python program that drives the loop). Setup
-  pip-installed the tool from the module's tool/ directory, ran `bmad-auto init`
-  (hooks + policy + gitignore), and `bmad-auto validate` (preflight). The skills
+  pip-installed the `bmad-automator` package from its Git repository, ran
+  `bmad-auto init` (hooks + policy + gitignore), and `bmad-auto validate`
+  (preflight). The skills
   are invoked by the orchestrator and must stay installed together —
   bmad-auto-review writes deferred-work entries per bmad-auto-dev's
   deferred-work-format.md. They require the BMad Method (bmm) module:

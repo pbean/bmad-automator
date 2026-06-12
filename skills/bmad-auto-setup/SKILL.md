@@ -7,7 +7,7 @@ description: Sets up BMAD Automator Skills module in a project. Use when the use
 
 ## Overview
 
-Installs and configures a BMad module into a project. This module is special: alongside the four automation skills it ships the **bmad-auto orchestrator tool** (the Python program that drives the loop) bundled in the sibling `tool/` directory. So setup does two jobs — (1) register module config + help entries, and (2) install the orchestrator tool and bootstrap the project so it is ready to run.
+Installs and configures a BMad module into a project. This module is special: alongside the four automation skills it relies on the **bmad-auto orchestrator tool** (the Python program that drives the loop), installed as the `bmad-automator` package from its public Git repository. So setup does two jobs — (1) register module config + help entries, and (2) install the orchestrator tool and bootstrap the project so it is ready to run.
 
 Module identity (name, code, version) comes from `./assets/module.yaml`. Collects user preferences and writes them to three files:
 
@@ -61,22 +61,24 @@ After writing config, create any output directories that were configured. For fi
 
 ## Install the Orchestrator Tool
 
-This module ships the **bmad-auto orchestrator** — the Python program that actually drives the loop — bundled in the sibling `tool/` directory (`../tool` relative to this skill). The four skills do nothing on their own: the orchestrator is what spawns the fresh Claude Code sessions that invoke `bmad-auto-dev`, `bmad-auto-review`, and `bmad-auto-sweep`, watches their hook signals, and verifies their artifacts. Installing the tool is therefore part of setup, not an optional extra.
+This module ships the **bmad-auto orchestrator** — the Python program that actually drives the loop — as the `bmad-automator` Python package, installed from its public Git repository. The four skills do nothing on their own: the orchestrator is what spawns the fresh Claude Code sessions that invoke `bmad-auto-dev`, `bmad-auto-review`, and `bmad-auto-sweep`, watches their hook signals, and verifies their artifacts. Installing the tool is therefore part of setup, not an optional extra.
 
-Unless the user explicitly asked to skip it (e.g. `skills only` / `--no-tool`), install and bootstrap now. In the commands below, resolve `<skill-dir>` to this skill's actual directory and `{project-root}` to the real project path before running.
+> **Why not a bundled copy?** The BMAD installer copies only the four skill directories into a project — it does **not** carry sibling files. So the tool can't ride along in the skill folder; it's installed from Git instead. The canonical source is <https://github.com/pbean/bmad-automator>.
 
-1. **Check whether it's already installed:** run `bmad-auto --version`. If it succeeds, the tool is already on PATH — tell the user the detected version and ask whether to reinstall/upgrade from the bundled copy. If they decline, skip to step 3.
+Unless the user explicitly asked to skip it (e.g. `skills only` / `--no-tool`), install and bootstrap now. In the commands below, resolve `{project-root}` to the real project path before running.
 
-2. **Install from the bundled source** (the `[tui]` extra pulls in the Textual dashboard so `bmad-auto tui` works):
+1. **Check what's already on PATH:** run `bmad-auto --version`. A version printing here does **not** mean this project is set up — it only means _some_ `bmad-auto` is importable in the current environment. Before trusting it, run `python3 -m pip show bmad-automator` and look at `Location`: if it points into a **source checkout** (an editable/dev install) or an unrelated virtualenv, warn the user that the active environment is shadowing the install and that the project would be relying on that checkout. Unless the user explicitly declines, install/upgrade from the canonical source below so the project doesn't depend on an incidental dev environment. Only skip the install if the user confirms the on-PATH copy is the one they want this project to use.
+
+2. **Install from the Git repository** (the `[tui]` extra pulls in the Textual dashboard so `bmad-auto tui` works):
 
    ```bash
-   python3 -m pip install "<skill-dir>/../tool[tui]"
+   python3 -m pip install --upgrade "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
    ```
 
    If pip reports an **externally-managed environment** (PEP 668) or a permission error, do **not** force or `--break-system-packages` it. Surface the message and let the user pick one of:
    - install into their active virtualenv (recommended if they have one activated), or
-   - `python3 -m pip install --user "<skill-dir>/../tool[tui]"`, or
-   - `pipx install "<skill-dir>/../tool[tui]"` (isolated; includes the TUI extra).
+   - `python3 -m pip install --user "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"`, or
+   - `pipx install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"` (isolated; includes the TUI extra).
 
    Re-run with their choice, then confirm with `bmad-auto --version`.
 
