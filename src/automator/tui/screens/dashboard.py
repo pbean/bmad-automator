@@ -52,6 +52,7 @@ class _PollContext:
         self.log_task: str | None = None
         self.attention_seen = 0
         self.first_poll = True
+        self.decision_toasted: str | None = None  # dw_id already announced
 
 
 @dataclass
@@ -71,6 +72,8 @@ class _Snapshot:
     attention_reset: bool = False
     new_attention: str = ""
     toast_attention: bool = False
+    decision: tuple[str, str] | None = None  # (dw_id, question) awaiting a human
+    toast_decision: bool = False
 
 
 class DashboardScreen(Screen[None]):
@@ -84,6 +87,7 @@ class DashboardScreen(Screen[None]):
         self._task_rows: set[str] = set()
         self._pending_run: str | None = None  # just-launched run, no state.json yet
         self._pending_deadline = 0.0
+        self._decision: tuple[str, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -133,11 +137,18 @@ class DashboardScreen(Screen[None]):
     def selected_run_id(self) -> str | None:
         return self._ctx.run_dir.name if self._ctx else None
 
+    @property
+    def decision_pending(self) -> tuple[str, str] | None:
+        """(dw_id, question) the selected run's sweep is blocked on, if any —
+        the attach action uses this to target the orchestrator window."""
+        return self._decision
+
     def _select_run(self, run_id: str) -> None:
         if self._ctx is not None and self._ctx.run_dir.name == run_id:
             return
         self._generation += 1
         self._ctx = _PollContext(self.project / RUNS_DIR / run_id)
+        self._decision = None
         tasks = self.query_one("#tasks", DataTable)
         tasks.clear()
         self._task_rows.clear()
@@ -185,6 +196,10 @@ class DashboardScreen(Screen[None]):
             snap.new_entries = ctx.journal.read_new()
             ctx.entries.extend(snap.new_entries)
             del ctx.entries[:-_MAX_ENTRIES]
+            snap.decision = data.pending_decision(ctx.entries)
+            if snap.decision is not None and ctx.decision_toasted != snap.decision[0]:
+                snap.toast_decision = True
+            ctx.decision_toasted = snap.decision[0] if snap.decision else None
             task = data.active_task_id(ctx.run_dir, ctx.entries)
             if task != ctx.log_task:
                 ctx.log_task = task
@@ -218,15 +233,23 @@ class DashboardScreen(Screen[None]):
         if not snap.has_run or snap.generation != self._generation:
             return  # selection changed mid-poll: per-run parts are stale
 
+        self._decision = snap.decision
         header = self.query_one("#runheader", RunHeader)
         if snap.run_id == self._pending_run and snap.state is None:
             header.show_starting(snap.run_id)  # launched, state.json not yet written
         else:
             if snap.run_id == self._pending_run:
                 self._pending_run = None  # the engine is up
-            header.show_run(snap.run_id, snap.status, snap.state)
+            header.show_run(snap.run_id, snap.status, snap.state, snap.decision)
         if snap.state is not None:
             self._apply_tasks(snap.state)
+        if snap.toast_decision and snap.decision is not None:
+            self.notify(
+                snap.decision[1] or snap.decision[0],
+                title=f"decision needed: {snap.decision[0]} — press a to attach",
+                severity="warning",
+                timeout=30,
+            )
 
         journal = self.query_one("#journal", RichLog)
         for entry in snap.new_entries:

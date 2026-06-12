@@ -245,6 +245,25 @@ def test_active_task_id_falls_back_to_newest_log(tmp_path):
     assert data.active_task_id(tmp_path, []) == "t-new"
 
 
+# ---------------------------------------------------------- pending decision
+
+
+def test_pending_decision_last_entry_only():
+    assert data.pending_decision([]) is None
+    entries = [
+        {"kind": "sweep-start"},
+        {"kind": "decision-pending", "dw_id": "DW-3", "question": "drop the cache?"},
+    ]
+    assert data.pending_decision(entries) == ("DW-3", "drop the cache?")
+    # any later entry means the blocking prompt was answered
+    entries.append({"kind": "decision-answered", "dw_id": "DW-3", "key": "a"})
+    assert data.pending_decision(entries) is None
+
+
+def test_pending_decision_missing_fields():
+    assert data.pending_decision([{"kind": "decision-pending"}]) == ("?", "")
+
+
 # ------------------------------------------------------------- sprint summary
 
 

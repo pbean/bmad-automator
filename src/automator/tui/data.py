@@ -289,6 +289,19 @@ def active_task_id(run_dir: Path, journal_entries: list[dict[str, Any]]) -> str 
     return logs[-1].stem if logs else None
 
 
+def pending_decision(journal_entries: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """(dw_id, question) when the journal's last entry is a decision-pending
+    announcement. The sweep prompter blocks on terminal input right after
+    writing it, so any subsequent entry of any kind means the prompt was
+    answered (or the sweep moved on) and the alert must clear."""
+    if not journal_entries:
+        return None
+    last = journal_entries[-1]
+    if last.get("kind") != "decision-pending":
+        return None
+    return str(last.get("dw_id", "?")), str(last.get("question", ""))
+
+
 # ------------------------------------------------------------ sprint status
 
 

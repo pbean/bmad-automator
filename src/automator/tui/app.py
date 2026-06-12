@@ -231,15 +231,28 @@ class BmadAutoApp(App[None]):
             self.notify("no run selected", severity="warning")
             return
         session = runs.session_name(run_id)
-        if not launch.session_exists(session):
+        window = launch.ctl_window(run_id)
+        agent_live = launch.session_exists(session)
+        # A sweep blocked on a decision prompt has no agent session — the
+        # human answers in the orchestrator's ctl window. Otherwise prefer the
+        # live agent session, falling back to the ctl window between sessions.
+        if window is not None and (
+            self._dashboard.decision_pending is not None or not agent_live
+        ):
+            launch.select_ctl_window(window)
+            target = f"={launch.CTL_SESSION}"
+        elif agent_live:
+            target = f"={session}"
+        else:
             self.notify(
-                f"no live agent session ({session}) — the run may be between sessions; "
-                f"the engine itself runs in tmux session {launch.CTL_SESSION}",
+                f"nothing to attach: no live agent session ({session}) and no "
+                f"{launch.CTL_SESSION} window for this run (runs started outside "
+                "the TUI have none)",
                 severity="warning",
                 timeout=10,
             )
             return
-        argv = runs.attach_argv(run_id)
+        argv = runs.attach_target_argv(target)
         if os.environ.get("TMUX"):
             subprocess.call(argv)  # switch-client: this client comes right back
             return

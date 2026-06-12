@@ -36,6 +36,27 @@ def session_exists(session: str) -> bool:
     return _tmux("has-session", "-t", f"={session}").returncode == 0
 
 
+def ctl_window(run_id: str) -> str | None:
+    """Name of the control-session window hosting this run's orchestrator
+    process (start_detached names windows <kind>-<run_id>), or None when the
+    run was not launched from the TUI or the session is gone."""
+    if not tmux_available():
+        return None
+    proc = _tmux("list-windows", "-t", f"={CTL_SESSION}", "-F", "#{window_name}")
+    if proc.returncode != 0:
+        return None
+    for name in proc.stdout.splitlines():
+        if name.endswith(f"-{run_id}"):
+            return name
+    return None
+
+
+def select_ctl_window(window: str) -> None:
+    """Make `window` the control session's current window, so a plain attach
+    to the session lands on it (attach-session itself takes no window)."""
+    _tmux("select-window", "-t", f"={CTL_SESSION}:{window}")
+
+
 def _ensure_ctl_session(project: Path) -> None:
     if session_exists(CTL_SESSION):
         return

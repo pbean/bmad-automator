@@ -49,6 +49,7 @@ bmad-auto attach          # watch the live Claude sessions in tmux
 bmad-auto status          # run + sprint summary
 bmad-auto resume <run-id> # continue after a gate pause or escalation
 bmad-auto sweep           # triage + execute open deferred-work.md entries
+bmad-auto tui             # interactive dashboard (needs the [tui] extra)
 ```
 
 One-time setup: if Claude Code has never run in the target project, start it
@@ -113,6 +114,44 @@ bmad-auto sweep [--no-prompt] [--decisions-only] [--max-bundles N] [--dry-run]
 Sweeps are their own resumable runs (`bmad-auto resume <id>`). `[sweep] auto`
 in the policy fires an unattended sweep automatically at epic boundaries or
 run end; a failed/paused child sweep never interrupts the parent run.
+
+## TUI
+
+```bash
+pip install -e ".[tui]"   # textual + tomlkit; the core stays pyyaml-only
+bmad-auto tui
+```
+
+A live dashboard over everything above: run picker (newest auto-selected),
+per-story phase/attempt/token table, and tabs tailing the journal, the active
+session's pane log, sprint status, and the ATTENTION file.
+
+| Key | Action |
+|---|---|
+| `r` / `s` | start a run / sweep (modal for epic, story, max-stories, dry-run…) |
+| `e` | resume the selected paused/interrupted run |
+| `a` | attach to the live agent session (or the orchestrator window) |
+| `v` | run `bmad-auto validate`, output in a modal |
+| `g` | settings editor for `.automator/policy.toml` |
+| `d` / `q` | toggle dark mode / quit |
+
+**The TUI is an observer/launcher, never the engine.** Runs started with `r`/`s`
+are detached `bmad-auto` processes in windows of a dedicated tmux session
+(`bmad-auto-ctl`), so they survive a TUI exit and crash; the dashboard watches
+runs purely through the run-dir artifacts the engine writes atomically, so
+runs started from a plain shell show up identically. Dry runs and `validate`
+are fast and read-only, so they are captured into a modal instead.
+
+When an attended sweep reaches a human decision it blocks on its own terminal
+prompt; the dashboard spots the `decision-pending` journal event and shows a
+banner + toast — press `a` to attach to the sweep's window, answer, and detach
+(`ctrl-b d`). The settings editor (`g`) edits policy.toml comment-preservingly
+and validates with the engine's own parser before saving; running engines
+snapshot policy at start, so changes apply to new runs and resumes.
+
+Launch and attach need tmux, the dashboard itself does not. Pid-based liveness
+is local-only: a run whose engine died shows `interrupted` (press `e`), runs
+on other hosts show `unknown`.
 
 ## Policy (`.automator/policy.toml`)
 

@@ -229,7 +229,15 @@ def validate_triage(
 
 class DecisionPrompter:
     """Walks the human through pending decisions on the terminal. Injection
-    points exist so tests can script answers."""
+    points exist so tests can script answers.
+
+    The interactive terminal prompt is the v1 protocol: observers (the TUI
+    dashboard, ATTENTION watchers) learn a sweep is blocked from the
+    decision-pending journal event written just before ask() and attach to
+    the sweep's tmux window to answer. A decisions-file protocol — engine
+    writes the pending question to a file and polls for an answer the TUI
+    could write in-app — is deliberately deferred to v2; it needs timeout +
+    ownership semantics this run-blocking prompt avoids."""
 
     def __init__(
         self,

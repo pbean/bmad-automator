@@ -39,10 +39,13 @@ def session_name(run_id: str) -> str:
     return f"bmad-auto-{run_id}"
 
 
-def attach_argv(run_id: str) -> list[str]:
-    """tmux command to reach a run's session. Inside tmux, nesting is refused,
-    so switch this client instead (tmux switch-client -l comes back)."""
-    session = session_name(run_id)
+def attach_target_argv(target: str) -> list[str]:
+    """tmux command to reach a target session/window. Inside tmux, nesting is
+    refused, so switch this client instead (tmux switch-client -l comes back)."""
     if os.environ.get("TMUX"):
-        return ["tmux", "switch-client", "-t", f"={session}"]
-    return ["tmux", "attach", "-t", f"={session}"]
+        return ["tmux", "switch-client", "-t", target]
+    return ["tmux", "attach", "-t", target]
+
+
+def attach_argv(run_id: str) -> list[str]:
+    return attach_target_argv(f"={session_name(run_id)}")

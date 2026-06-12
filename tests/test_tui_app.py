@@ -393,6 +393,7 @@ async def test_attach_without_tmux_notifies(project, monkeypatch):
 async def test_attach_without_agent_session_notifies(project, monkeypatch):
     monkeypatch.setattr(launch, "tmux_available", lambda: True)
     monkeypatch.setattr(launch, "session_exists", lambda session: False)
+    monkeypatch.setattr(launch, "ctl_window", lambda run_id: None)
     make_run(project.project, "20260611-100000-aaaa")
     app = BmadAutoApp(project.project)
     async with app.run_test() as pilot:
@@ -402,3 +403,93 @@ async def test_attach_without_agent_session_notifies(project, monkeypatch):
         await until(
             pilot, lambda: any("no live agent session" in m for m in notifications(app))
         )
+
+
+# ------------------------------------------------------- sweep decision flow
+
+
+async def test_decision_banner_shows_and_clears(project):
+    run_dir = make_run(project.project, "20260611-100000-aaaa", run_type="sweep", alive=True)
+    journal = Journal(run_dir)
+    journal.append("sweep-start")
+    journal.append("decision-pending", dw_id="DW-7", question="reopen the cache work?")
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        screen = dashboard(app)
+        await until(pilot, lambda: screen.decision_pending is not None)
+        assert screen.decision_pending == ("DW-7", "reopen the cache work?")
+        header = str(screen.query_one("#runheader", RunHeader).content)
+        assert "decision needed: DW-7" in header
+        assert "press a to attach and answer" in header
+        assert any("reopen the cache work?" in m for m in notifications(app))
+
+        journal.append("decision-answered", dw_id="DW-7", key="a", effect="build")
+        await until(pilot, lambda: screen.decision_pending is None)
+        header = str(screen.query_one("#runheader", RunHeader).content)
+        assert "decision needed" not in header
+
+
+def _patch_attach_exec(monkeypatch) -> list[list[str]]:
+    """Route the final attach exec into a list: pretend we are inside tmux so
+    action_attach takes the plain subprocess.call(switch-client) path."""
+    calls: list[list[str]] = []
+    monkeypatch.setenv("TMUX", "/tmp/fake-tmux,1,0")
+    monkeypatch.setattr(
+        "automator.tui.app.subprocess.call", lambda argv: calls.append(list(argv)) or 0
+    )
+    return calls
+
+
+async def test_attach_targets_ctl_window_when_decision_pending(project, monkeypatch):
+    run_dir = make_run(project.project, "20260611-100000-aaaa", run_type="sweep", alive=True)
+    Journal(run_dir).append("decision-pending", dw_id="DW-7", question="q?")
+    selected: list[str] = []
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(launch, "session_exists", lambda session: True)  # agent up too
+    monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"sweep-{run_id}")
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
+    calls = _patch_attach_exec(monkeypatch)
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).decision_pending is not None)
+        await pilot.press("a")
+        await until(pilot, lambda: bool(calls))
+    assert selected == ["sweep-20260611-100000-aaaa"]
+    assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+
+
+async def test_attach_prefers_agent_session_without_decision(project, monkeypatch):
+    make_run(project.project, "20260611-100000-aaaa", alive=True)
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(launch, "session_exists", lambda session: True)
+    monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"run-{run_id}")
+    calls = _patch_attach_exec(monkeypatch)
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).selected_run_id is not None)
+        await pilot.press("a")
+        await until(pilot, lambda: bool(calls))
+    assert calls == [
+        ["tmux", "switch-client", "-t", "=bmad-auto-20260611-100000-aaaa"]
+    ]
+
+
+async def test_attach_falls_back_to_ctl_window(project, monkeypatch):
+    make_run(project.project, "20260611-100000-aaaa", alive=True)
+    selected: list[str] = []
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(launch, "session_exists", lambda session: False)
+    monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"run-{run_id}")
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
+    calls = _patch_attach_exec(monkeypatch)
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).selected_run_id is not None)
+        await pilot.press("a")
+        await until(pilot, lambda: bool(calls))
+    assert selected == ["run-20260611-100000-aaaa"]
+    assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]

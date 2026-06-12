@@ -126,6 +126,35 @@ def test_session_exists(monkeypatch):
     assert fake.calls[0] == ["tmux", "has-session", "-t", "=bmad-auto-x"]
 
 
+def test_ctl_window_matches_run_id_suffix(monkeypatch):
+    def fake(argv, **kwargs):
+        out = "run-AAAA\nsweep-RID\nresume-BBBB\n" if argv[1] == "list-windows" else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    monkeypatch.setattr(launch.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert launch.ctl_window("RID") == "sweep-RID"
+    assert launch.ctl_window("CCCC") is None
+
+
+def test_ctl_window_no_session_or_tmux(monkeypatch):
+    def fake(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no session")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    monkeypatch.setattr(launch.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert launch.ctl_window("RID") is None
+    monkeypatch.setattr(launch.shutil, "which", lambda name: None)
+    assert launch.ctl_window("RID") is None  # no subprocess call attempted
+
+
+def test_select_ctl_window_argv(fake_run):
+    launch.select_ctl_window("sweep-RID")
+    assert fake_run.calls == [
+        ["tmux", "select-window", "-t", "=bmad-auto-ctl:sweep-RID"]
+    ]
+
+
 def test_run_captured_merges_streams(monkeypatch):
     def fake(argv, **kwargs):
         assert argv[:3] == [sys.executable, "-m", "automator.cli"]

@@ -63,7 +63,13 @@ class RunHeader(Static):
         )
         self.update(text)
 
-    def show_run(self, run_id: str, status: str, state: RunState | None) -> None:
+    def show_run(
+        self,
+        run_id: str,
+        status: str,
+        state: RunState | None,
+        decision: tuple[str, str] | None = None,
+    ) -> None:
         text = Text()
         text.append(run_id, style="bold")
         if state is not None and state.run_type != "story":
@@ -107,6 +113,12 @@ class RunHeader(Static):
                 "\n✖ engine gone — run was interrupted · press e to resume",
                 style="bold red",
             )
+        if decision is not None and status not in (data.FINISHED, data.INTERRUPTED):
+            dw_id, question = decision
+            text.append(f"\n⚑ decision needed: {dw_id}", style="bold yellow")
+            if question:
+                text.append(f" — {_short(question, 100)}", style="yellow")
+            text.append("\n  press a to attach and answer", style="bold yellow")
         self.update(text)
 
 
