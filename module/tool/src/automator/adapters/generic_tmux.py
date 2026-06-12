@@ -90,7 +90,16 @@ class GenericTmuxAdapter(CodingCLIAdapter):
         if probe.returncode != 0:
             # Window 0 is a plain shell so the session survives task windows closing.
             self._tmux(
-                "new-session", "-d", "-s", self.session_name, "-c", str(cwd), "-x", "220", "-y", "50"
+                "new-session",
+                "-d",
+                "-s",
+                self.session_name,
+                "-c",
+                str(cwd),
+                "-x",
+                "220",
+                "-y",
+                "50",
             )
 
     def build_command(self, spec: SessionSpec) -> str:
@@ -138,12 +147,20 @@ class GenericTmuxAdapter(CodingCLIAdapter):
         # window". That is not a setup failure -- the dead window is reported as
         # a crash in wait_for_completion -- so tolerate it instead of raising.
         try:
-            self._tmux("pipe-pane", "-t", window_id, "-o", f"cat >> {shlex.quote(str(log_file))}")
+            self._tmux(
+                "pipe-pane",
+                "-t",
+                window_id,
+                "-o",
+                f"cat >> {shlex.quote(str(log_file))}",
+            )
         except TmuxError:
             pass
         return SessionHandle(task_id=spec.task_id, native_id=window_id)
 
-    def wait_for_completion(self, handle: SessionHandle, spec: SessionSpec) -> SessionResult:
+    def wait_for_completion(
+        self, handle: SessionHandle, spec: SessionSpec
+    ) -> SessionResult:
         deadline = time.monotonic() + spec.timeout_s
         session_id: str | None = None
         transcript_path: str | None = None
@@ -153,7 +170,9 @@ class GenericTmuxAdapter(CodingCLIAdapter):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return SessionResult(
-                    status="timeout", session_id=session_id, transcript_path=transcript_path
+                    status="timeout",
+                    session_id=session_id,
+                    transcript_path=transcript_path,
                 )
             event = self.watcher.wait_for(
                 handle.task_id, EVENT_KINDS, timeout_s=min(remaining, 5.0)
@@ -186,7 +205,11 @@ class GenericTmuxAdapter(CodingCLIAdapter):
                 return self._final(handle, "crashed", session_id, transcript_path)
 
     def _final(
-        self, handle: SessionHandle, fallback: str, session_id: str | None, transcript: str | None
+        self,
+        handle: SessionHandle,
+        fallback: str,
+        session_id: str | None,
+        transcript: str | None,
     ) -> SessionResult:
         """Session is gone or done responding: completed if the result file
         landed anyway, otherwise the fallback status."""
@@ -212,7 +235,9 @@ class GenericTmuxAdapter(CodingCLIAdapter):
             return None
         return data if isinstance(data, dict) else None
 
-    def _await_result(self, task_id: str, grace_s: float = RESULT_GRACE_S) -> dict | None:
+    def _await_result(
+        self, task_id: str, grace_s: float = RESULT_GRACE_S
+    ) -> dict | None:
         deadline = time.monotonic() + grace_s
         while True:
             result = self._read_result(task_id)
@@ -224,7 +249,14 @@ class GenericTmuxAdapter(CodingCLIAdapter):
         # display-message -t <dead-window> exits 0 with empty output, so list
         # the session's window ids and check membership instead.
         probe = subprocess.run(
-            ["tmux", "list-windows", "-t", f"={self.session_name}", "-F", "#{window_id}"],
+            [
+                "tmux",
+                "list-windows",
+                "-t",
+                f"={self.session_name}",
+                "-F",
+                "#{window_id}",
+            ],
             capture_output=True,
             text=True,
             timeout=TMUX_TIMEOUT_S,

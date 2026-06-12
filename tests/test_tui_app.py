@@ -97,10 +97,15 @@ async def test_run_table_populates_and_selects_newest(project):
         runs = screen.query_one("#runs", DataTable)
         await until(pilot, lambda: runs.row_count == 2)
         await until(pilot, lambda: screen.selected_run_id == "20260611-110000-bbbb")
+        # The run's type + pid-liveness populate on an async refresh tick after
+        # the row appears; wait for the fully-rendered header (not just the id)
+        # so we don't race the placeholder ("? unknown / state unavailable").
         await until(
             pilot,
-            lambda: "20260611-110000-bbbb"
-            in str(screen.query_one("#runheader", RunHeader).content),
+            lambda: all(
+                tok in str(screen.query_one("#runheader", RunHeader).content)
+                for tok in ("20260611-110000-bbbb", "[sweep]", "running")
+            ),
         )
         header = str(screen.query_one("#runheader", RunHeader).content)
         assert "[sweep]" in header
@@ -247,7 +252,8 @@ async def test_start_run_modal_launches(project, monkeypatch):
         assert screen.selected_run_id == calls["run_id"]
         await until(
             pilot,
-            lambda: "starting" in str(screen.query_one("#runheader", RunHeader).content),
+            lambda: "starting"
+            in str(screen.query_one("#runheader", RunHeader).content),
         )
 
 
@@ -376,7 +382,9 @@ async def test_resume_finished_run_refused(project, monkeypatch):
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
         await until(pilot, lambda: dashboard(app).selected_run_id is not None)
         await pilot.press("e")
-        await until(pilot, lambda: any("already finished" in m for m in notifications(app)))
+        await until(
+            pilot, lambda: any("already finished" in m for m in notifications(app))
+        )
         assert isinstance(app.screen, DashboardScreen)
 
 
@@ -387,7 +395,9 @@ async def test_attach_without_tmux_notifies(project, monkeypatch):
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
         await pilot.press("a")
-        await until(pilot, lambda: any("tmux not found" in m for m in notifications(app)))
+        await until(
+            pilot, lambda: any("tmux not found" in m for m in notifications(app))
+        )
 
 
 async def test_attach_without_agent_session_notifies(project, monkeypatch):
@@ -409,7 +419,9 @@ async def test_attach_without_agent_session_notifies(project, monkeypatch):
 
 
 async def test_decision_banner_shows_and_clears(project):
-    run_dir = make_run(project.project, "20260611-100000-aaaa", run_type="sweep", alive=True)
+    run_dir = make_run(
+        project.project, "20260611-100000-aaaa", run_type="sweep", alive=True
+    )
     journal = Journal(run_dir)
     journal.append("sweep-start")
     journal.append("decision-pending", dw_id="DW-7", question="reopen the cache work?")
@@ -442,7 +454,9 @@ def _patch_attach_exec(monkeypatch) -> list[list[str]]:
 
 
 async def test_attach_targets_ctl_window_when_decision_pending(project, monkeypatch):
-    run_dir = make_run(project.project, "20260611-100000-aaaa", run_type="sweep", alive=True)
+    run_dir = make_run(
+        project.project, "20260611-100000-aaaa", run_type="sweep", alive=True
+    )
     Journal(run_dir).append("decision-pending", dw_id="DW-7", question="q?")
     selected: list[str] = []
     monkeypatch.setattr(launch, "tmux_available", lambda: True)
@@ -472,9 +486,7 @@ async def test_attach_prefers_agent_session_without_decision(project, monkeypatc
         await until(pilot, lambda: dashboard(app).selected_run_id is not None)
         await pilot.press("a")
         await until(pilot, lambda: bool(calls))
-    assert calls == [
-        ["tmux", "switch-client", "-t", "=bmad-auto-20260611-100000-aaaa"]
-    ]
+    assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-20260611-100000-aaaa"]]
 
 
 async def test_attach_falls_back_to_ctl_window(project, monkeypatch):

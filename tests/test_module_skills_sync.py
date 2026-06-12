@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-MODULE_SKILLS = ["bmad-auto-setup", "bmad-auto-dev", "bmad-auto-review", "bmad-auto-sweep"]
+MODULE_SKILLS = [
+    "bmad-auto-setup",
+    "bmad-auto-dev",
+    "bmad-auto-review",
+    "bmad-auto-sweep",
+]
 SKILL_TREES = [".claude/skills", ".agents/skills"]
 
 
