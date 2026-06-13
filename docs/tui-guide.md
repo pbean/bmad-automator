@@ -118,7 +118,8 @@ total tokens`. Below that, situational banners:
 
 - `⏸ paused (<stage>) — <reason> · press e to resume` — gate or escalation
   pause; stages are `spec-approval`, `epic-boundary`, `escalation`,
-  `story-gate`.
+  `story-gate`. At the `escalation` stage, `e` only skips the escalated story —
+  press `R` instead to resolve it (see "Resolving an escalation" below).
 - `✖ engine gone — run was interrupted · press e to resume` — the recorded
   engine pid is dead.
 - `⚑ decision needed: DW-<n> — <question> / press a to attach and answer` —
@@ -188,6 +189,7 @@ Journal kinds are styled by substring, first match wins:
 | `r` | start a run (modal)                                              |
 | `s` | start a sweep (modal)                                            |
 | `e` | resume the selected paused/interrupted run (confirm modal)       |
+| `R` | resolve a run paused at an escalation (interactive, then re-arm) |
 | `a` | attach to the selected run's live session or orchestrator window |
 | `v` | run `bmad-auto validate`, output in a modal                      |
 | `g` | settings editor for `.automator/policy.toml`                     |
@@ -239,6 +241,25 @@ this run` when the original engine still appears to be running. Heed this
 
 Confirming spawns `bmad-auto resume <run-id>` detached in `bmad-auto-ctl`,
 like any other launch.
+
+## Resolving an escalation (`R`)
+
+`R` is the escalation-specific counterpart to `e`. It is only offered for a run
+paused at the `escalation` stage (otherwise it warns and does nothing) and
+refuses a run whose engine is still live. A CRITICAL escalation parks its story
+in a terminal `escalated` phase that plain `resume` skips — `R` is how you get
+it un-stuck.
+
+Confirming launches `bmad-auto resolve <run-id>` in a `bmad-auto-ctl` window and
+**attaches you to it** (the resolve agent is interactive). You converse with the
+agent — it is seeded with the escalation detail and the frozen spec — to
+disambiguate the spec. When it has recorded a resolution, the same window prompts
+`re-arm <story> and resume run <id>? [y/N]`; answer `y` and it re-arms the story
+(`escalated → pending`, spec status reset to `ready-for-dev`) and resumes the run
+in place — a clean rebuild against the corrected spec, then on through the rest
+of the sprint. Detach (`Ctrl-b d`) to return to the dashboard, which observes the
+resumed run like any other. Exiting the agent without recording a resolution
+leaves the story escalated and the run paused — the safe default.
 
 ## Attaching (`a`) and the sweep decision flow
 

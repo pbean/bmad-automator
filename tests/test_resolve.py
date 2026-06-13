@@ -1,0 +1,208 @@
+"""Escalation-resolution: context build, re-arm, spec status writer, session."""
+
+import json
+
+import pytest
+
+from automator import resolve, runs, verify
+from automator.journal import load_state, save_state
+from automator.model import (
+    PAUSE_ESCALATION,
+    Phase,
+    RunState,
+    SessionRecord,
+    StoryTask,
+)
+
+SPEC = """\
+---
+title: List command
+status: in-review
+owner: amelia
+---
+
+# Spec
+
+<frozen-after-approval>
+Filter notes by workspace name.
+</frozen-after-approval>
+"""
+
+
+def _escalated_run(project, run_id="20260613-111429-6a14", *, spec_file=None, with_session=True):
+    task = StoryTask(
+        story_key="6-4-cli-list-command",
+        epic=6,
+        phase=Phase.ESCALATED,
+        attempt=1,
+        review_cycle=1,
+        baseline_commit="abc123",
+        spec_file=spec_file,
+    )
+    if with_session:
+        task.sessions.append(
+            SessionRecord(
+                task_id="6-4-cli-list-command-review-1", role="review", status="completed"
+            )
+        )
+    state = RunState(
+        run_id=run_id,
+        project=str(project),
+        started_at="2026-06-13T11:14:29",
+        paused_reason="CRITICAL escalation from review session: names not unique",
+        paused_stage=PAUSE_ESCALATION,
+        paused_story_key="6-4-cli-list-command",
+        tasks={task.story_key: task},
+    )
+    run_dir = project / ".automator" / "runs" / run_id
+    save_state(run_dir, state)
+    return run_dir, state, task
+
+
+# ----------------------------------------------------------- set_frontmatter_status
+
+
+def test_set_frontmatter_status_replaces(tmp_path):
+    spec = tmp_path / "spec.md"
+    spec.write_text(SPEC, encoding="utf-8")
+    assert verify.set_frontmatter_status(spec, "ready-for-dev") is True
+    assert verify.read_frontmatter(spec)["status"] == "ready-for-dev"
+    # other fields + the frozen block survive untouched
+    text = spec.read_text(encoding="utf-8")
+    assert "owner: amelia" in text
+    assert "<frozen-after-approval>" in text
+    assert "title: List command" in text
+
+
+def test_set_frontmatter_status_idempotent(tmp_path):
+    spec = tmp_path / "spec.md"
+    spec.write_text(SPEC, encoding="utf-8")
+    verify.set_frontmatter_status(spec, "ready-for-dev")
+    # second call is a no-op (already at the target)
+    assert verify.set_frontmatter_status(spec, "ready-for-dev") is False
+
+
+def test_set_frontmatter_status_no_frontmatter(tmp_path):
+    spec = tmp_path / "spec.md"
+    spec.write_text("# just a heading\n", encoding="utf-8")
+    assert verify.set_frontmatter_status(spec, "ready-for-dev") is False
+
+
+# ----------------------------------------------------------- build_context
+
+
+def test_build_context_gathers_critical_escalations(tmp_path):
+    run_dir, state, task = _escalated_run(tmp_path, spec_file="/abs/spec.md")
+    task_dir = run_dir / "tasks" / "6-4-cli-list-command-review-1"
+    task_dir.mkdir(parents=True)
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "escalations": [
+                    {"type": "spec-gap", "severity": "CRITICAL", "detail": "names not unique"},
+                    {"type": "nit", "severity": "PREFERENCE", "detail": "ignore me"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    path = resolve.build_context(state, run_dir, "6-4-cli-list-command")
+    ctx = json.loads(path.read_text(encoding="utf-8"))
+    assert ctx["story_key"] == "6-4-cli-list-command"
+    assert ctx["spec_file"] == "/abs/spec.md"
+    assert ctx["baseline_commit"] == "abc123"
+    details = [e["detail"] for e in ctx["escalations"]]
+    assert "names not unique" in details
+    assert "ignore me" not in details  # PREFERENCE dropped
+    assert ctx["resolution_path"].endswith("resolve/6-4-cli-list-command/resolution.json")
+
+
+def test_build_context_no_session_files(tmp_path):
+    run_dir, state, _ = _escalated_run(tmp_path, with_session=False)
+    path = resolve.build_context(state, run_dir, "6-4-cli-list-command")
+    ctx = json.loads(path.read_text(encoding="utf-8"))
+    assert ctx["escalations"] == []
+    assert ctx["paused_reason"].startswith("CRITICAL")
+
+
+# ----------------------------------------------------------- rearm_escalation
+
+
+def test_rearm_flips_phase_and_spec_status(tmp_path):
+    spec = tmp_path / "spec.md"
+    spec.write_text(SPEC, encoding="utf-8")
+    run_dir, _, _ = _escalated_run(tmp_path, spec_file=str(spec))
+    key = runs.rearm_escalation(run_dir)
+    assert key == "6-4-cli-list-command"
+    state = load_state(run_dir)
+    task = state.tasks[key]
+    assert task.phase == Phase.PENDING
+    assert task.attempt == 0
+    assert task.review_cycle == 0
+    # spec re-armed for a clean re-implement, even though the agent left it in-review
+    assert verify.read_frontmatter(spec)["status"] == "ready-for-dev"
+    # pause is NOT cleared here — resume does that
+    assert state.paused_stage == PAUSE_ESCALATION
+
+
+def test_rearm_journals_event(tmp_path):
+    run_dir, _, _ = _escalated_run(tmp_path)
+    runs.rearm_escalation(run_dir)
+    journal = (run_dir / "journal.jsonl").read_text(encoding="utf-8")
+    assert "story-escalation-resolved" in journal
+
+
+def test_rearm_rejects_non_escalation_stage(tmp_path):
+    run_dir = tmp_path / ".automator" / "runs" / "r1"
+    save_state(
+        run_dir,
+        RunState(
+            run_id="r1", project=str(tmp_path), started_at="now", paused_stage="spec-approval"
+        ),
+    )
+    with pytest.raises(runs.RearmError, match="not paused at an escalation"):
+        runs.rearm_escalation(run_dir)
+
+
+def test_rearm_rejects_unescalated_story(tmp_path):
+    run_dir, state, task = _escalated_run(tmp_path)
+    task.phase = Phase.DONE  # terminal but not escalated
+    save_state(run_dir, state)
+    with pytest.raises(runs.RearmError, match="not escalated"):
+        runs.rearm_escalation(run_dir)
+
+
+# ----------------------------------------------------------- run_session
+
+
+class _FakeAdapter:
+    def __init__(self, on_run):
+        self._on_run = on_run
+
+    def interactive_argv(self, spec):
+        return ["fake-agent", spec.prompt]
+
+    def interactive_env(self, spec):
+        return dict(spec.env)
+
+
+def test_run_session_detects_resolution(tmp_path, monkeypatch):
+    run_dir, state, _ = _escalated_run(tmp_path)
+    resolve.build_context(state, run_dir, "6-4-cli-list-command")
+
+    def fake_subprocess_run(argv, cwd, env):
+        # simulate the agent writing the resolution marker
+        resolve.resolution_path(run_dir, "6-4-cli-list-command").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(resolve.subprocess, "run", fake_subprocess_run)
+    adapter = _FakeAdapter(None)
+    assert resolve.run_session(adapter, tmp_path, run_dir, "6-4-cli-list-command") is True
+
+
+def test_run_session_no_resolution(tmp_path, monkeypatch):
+    run_dir, state, _ = _escalated_run(tmp_path)
+    resolve.build_context(state, run_dir, "6-4-cli-list-command")
+    monkeypatch.setattr(resolve.subprocess, "run", lambda *a, **k: None)
+    assert (
+        resolve.run_session(_FakeAdapter(None), tmp_path, run_dir, "6-4-cli-list-command") is False
+    )

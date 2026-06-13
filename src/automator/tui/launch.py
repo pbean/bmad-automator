@@ -148,6 +148,13 @@ def resume_detached(project: Path, run_id: str) -> None:
     start_detached(project, ["resume", "--project", str(project), run_id], run_id, "resume")
 
 
+def start_resolve_detached(project: Path, run_id: str) -> None:
+    """Run `bmad-auto resolve <run_id>` in a ctl-session window. The caller
+    attaches to it: the resolve agent is interactive, and the post-session
+    confirm + resume happen in that same window."""
+    start_detached(project, ["resolve", "--project", str(project), run_id], run_id, "resolve")
+
+
 def run_captured(argv_tail: list[str]) -> tuple[int, str]:
     """Run a fast read-only command (validate, --dry-run) and capture its
     combined output for display."""

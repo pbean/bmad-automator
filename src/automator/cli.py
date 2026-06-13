@@ -17,6 +17,7 @@ from . import (
 )
 from . import policy as policy_mod
 from . import (
+    resolve,
     runs,
     sprintstatus,
     verify,
@@ -376,16 +377,13 @@ def _sweep_dry_run(paths: bmadconfig.ProjectPaths, pol) -> int:
     return 0
 
 
-def cmd_resume(args: argparse.Namespace) -> int:
-    project = _project(args)
+def _resume_paused_run(project: Path, run_dir: Path) -> int:
+    """Resume the engine for a paused/interrupted run. Shared by `resume` and
+    the re-arm step of `resolve`."""
     paths = bmadconfig.load_paths(project)
-    run_dir = project / RUNS_DIR / args.run_id
-    if not (run_dir / "state.json").is_file():
-        print(f"no such run: {args.run_id}", file=sys.stderr)
-        return 1
     state = load_state(run_dir)
     if state.finished:
-        print(f"run {args.run_id} already finished", file=sys.stderr)
+        print(f"run {run_dir.name} already finished", file=sys.stderr)
         return 1
     pol = policy_mod.load(_policy_path(project))
     journal = Journal(run_dir)
@@ -425,6 +423,87 @@ def cmd_resume(args: argparse.Namespace) -> int:
     summary = engine.run()
     print(summary.render())
     return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    project = _project(args)
+    run_dir = project / RUNS_DIR / args.run_id
+    if not runs.is_run(run_dir):
+        print(f"no such run: {args.run_id}", file=sys.stderr)
+        return 1
+    return _resume_paused_run(project, run_dir)
+
+
+def _confirm(question: str) -> bool:
+    try:
+        ans = input(f"{question} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return ans in ("y", "yes")
+
+
+def cmd_resolve(args: argparse.Namespace) -> int:
+    from .model import PAUSE_ESCALATION, Phase
+
+    project = _project(args)
+    run_dir = runs.run_dir_for(project, args.run_id)
+    if not runs.is_run(run_dir):
+        print(f"no such run: {args.run_id}", file=sys.stderr)
+        return 1
+    state = load_state(run_dir)
+    if state.paused_stage != PAUSE_ESCALATION:
+        print(
+            f"run {args.run_id} is not paused at an escalation "
+            f"(stage: {state.paused_stage or 'none'})",
+            file=sys.stderr,
+        )
+        return 1
+    if runs.engine_alive(run_dir):
+        print(f"run {args.run_id} is still live — stop it first", file=sys.stderr)
+        return 1
+    story_key = args.story or state.paused_story_key
+    task = state.tasks.get(story_key) if story_key else None
+    if story_key is None or task is None or task.phase != Phase.ESCALATED:
+        print(f"no escalated story to resolve in run {args.run_id}", file=sys.stderr)
+        return 1
+
+    if args.interactive:
+        pol = policy_mod.load(_policy_path(project))
+        adapters = _make_adapters(project, run_dir, pol)
+        model = pol.adapter.resolved("dev").model
+        resolve.build_context(state, run_dir, story_key)
+        print(f"launching resolve agent for {story_key} — converse, fix the spec, then exit…")
+        try:
+            produced = resolve.run_session(
+                adapters["dev"], project, run_dir, story_key, model=model
+            )
+        except NotImplementedError:
+            print(
+                "the dev adapter has no interactive session mode — fix the spec by hand, "
+                f"then: bmad-auto resolve {args.run_id} --no-interactive",
+                file=sys.stderr,
+            )
+            return 1
+        if not produced:
+            print(
+                f"no resolution recorded for {story_key} " f"(agent did not write resolution.json)",
+                file=sys.stderr,
+            )
+
+    # confirm-then-resume (args.resume: None = ask, True = auto, False = re-arm only)
+    if args.resume is None and not _confirm(f"re-arm {story_key} and resume run {args.run_id}?"):
+        print("cancelled — run is still paused at the escalation")
+        return 0
+    try:
+        runs.rearm_escalation(run_dir, story_key)
+    except runs.RearmError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"re-armed {story_key}")
+    if args.resume is False:
+        print(f"resume when ready: bmad-auto resume {args.run_id}")
+        return 0
+    return _resume_paused_run(project, run_dir)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -622,6 +701,25 @@ def main(argv: list[str] | None = None) -> int:
 
     resume_p = add("resume", cmd_resume, "resume a paused run")
     resume_p.add_argument("run_id")
+
+    resolve_p = add(
+        "resolve", cmd_resolve, "resolve a CRITICAL escalation interactively, then re-arm + resume"
+    )
+    resolve_p.add_argument("run_id")
+    resolve_p.add_argument("--story", help="story key to resolve (default: the paused one)")
+    resolve_p.add_argument(
+        "--no-interactive",
+        dest="interactive",
+        action="store_false",
+        help="skip the resolve agent (spec already fixed by hand); just re-arm + resume",
+    )
+    resolve_p.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="--resume: re-arm + resume without prompting; --no-resume: re-arm only "
+        "(default: prompt to confirm, then resume)",
+    )
 
     status_p = add("status", cmd_status, "show run + sprint state")
     status_p.add_argument("run_id", nargs="?")

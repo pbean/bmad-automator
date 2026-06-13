@@ -3,8 +3,8 @@
 This module is two things: the four `bmad-auto-*` skills and the `bmad-automator`
 orchestrator tool (the Python program that actually drives the loop). The skills do
 nothing on their own — the orchestrator is what spawns the fresh coding-CLI sessions
-that invoke `bmad-auto-dev`, `bmad-auto-review`, and `bmad-auto-sweep`, watches their
-hook signals, and verifies their artifacts. Installing the tool is part of setup, not
+that invoke `bmad-auto-dev`, `bmad-auto-review`, `bmad-auto-sweep`, and
+`bmad-auto-resolve`, watches their hook signals, and verifies their artifacts. Installing the tool is part of setup, not
 an optional extra.
 
 There are two ways the skills land in a project. The orchestrator's wheel **bundles**
@@ -63,7 +63,8 @@ claude "/bmad-auto-setup accept all defaults"            # register _bmad/ confi
 Add `--cli codex --cli gemini` to also populate `.agents/skills/`. The skills must be
 installed together: `bmad-auto-review` writes deferred-work entries per
 `bmad-auto-dev/deferred-work-format.md` (a sibling skill directory) — `init` always
-installs all four.
+installs them all (`bmad-auto-dev`, `bmad-auto-review`, `bmad-auto-resolve`,
+`bmad-auto-sweep`, `bmad-auto-setup`).
 
 ## Choosing which CLIs to drive
 

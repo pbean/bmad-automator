@@ -32,7 +32,13 @@ GEMINI_HOOK_TIMEOUT_MS = 60_000
 # The bmad-auto-* skills bundled in the wheel (automator/data/skills/) that
 # `bmad-auto init` lays down. They must be installed together — bmad-auto-review
 # references bmad-auto-dev/deferred-work-format.md as a sibling.
-MODULE_SKILLS = ("bmad-auto-dev", "bmad-auto-review", "bmad-auto-sweep", "bmad-auto-setup")
+MODULE_SKILLS = (
+    "bmad-auto-dev",
+    "bmad-auto-review",
+    "bmad-auto-resolve",
+    "bmad-auto-sweep",
+    "bmad-auto-setup",
+)
 
 
 def _hook_command(project: Path, profile: CLIProfile, canonical_event: str) -> str:

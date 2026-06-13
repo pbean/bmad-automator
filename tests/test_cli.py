@@ -241,6 +241,113 @@ def test_archive_refuses_live_run_without_force(tmp_path, monkeypatch, capsys):
     assert run_dir.exists()
 
 
+def _escalated_run(project, run_id="r1", *, story="s1", spec_file=None):
+    from automator.model import Phase, StoryTask
+
+    task = StoryTask(story_key=story, epic=1, phase=Phase.ESCALATED, attempt=1, spec_file=spec_file)
+    return _make_run_with_state(
+        project,
+        run_id,
+        paused_reason="CRITICAL escalation",
+        paused_stage="escalation",
+        paused_story_key=story,
+        tasks={story: task},
+    )
+
+
+def test_resolve_no_such_run(tmp_path, capsys):
+    assert cli.main(["resolve", "--project", str(tmp_path), "missing"]) == 1
+    assert "no such run" in capsys.readouterr().err
+
+
+def test_resolve_rejects_non_escalation_stage(tmp_path, capsys):
+    _make_run_with_state(tmp_path, "r1", paused_stage="spec-approval", paused_reason="x")
+    assert cli.main(["resolve", "--project", str(tmp_path), "r1"]) == 1
+    assert "not paused at an escalation" in capsys.readouterr().err
+
+
+def test_resolve_refuses_live_run(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    monkeypatch.setattr(runs, "engine_alive", lambda _rd: True)
+    _escalated_run(tmp_path, "r1")
+    assert cli.main(["resolve", "--project", str(tmp_path), "r1"]) == 1
+    assert "still live" in capsys.readouterr().err
+
+
+def test_resolve_no_escalated_story(tmp_path, capsys):
+    _make_run_with_state(
+        tmp_path, "r1", paused_stage="escalation", paused_reason="x", paused_story_key="ghost"
+    )
+    assert cli.main(["resolve", "--project", str(tmp_path), "r1"]) == 1
+    assert "no escalated story" in capsys.readouterr().err
+
+
+def test_resolve_no_interactive_rearms_and_resumes(tmp_path, monkeypatch, capsys):
+    from automator.journal import load_state
+    from automator.model import Phase
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("---\nstatus: in-review\n---\n", encoding="utf-8")
+    run_dir = _escalated_run(tmp_path, "r1", spec_file=str(spec))
+
+    resumed = []
+    monkeypatch.setattr(cli, "_resume_paused_run", lambda proj, rd: resumed.append(rd) or 0)
+    rc = cli.main(["resolve", "--project", str(tmp_path), "r1", "--no-interactive", "--resume"])
+    assert rc == 0
+    assert resumed == [run_dir]
+    # re-armed: task flipped out of ESCALATED, spec status re-armed
+    task = load_state(run_dir).tasks["s1"]
+    assert task.phase == Phase.PENDING
+    assert "ready-for-dev" in spec.read_text()
+
+
+def test_resolve_interactive_runs_session_then_rearms(tmp_path, monkeypatch):
+    from automator import resolve
+    from automator.journal import load_state
+    from automator.model import Phase
+
+    _escalated_run(tmp_path, "r1")
+    calls = {}
+    monkeypatch.setattr(cli, "_make_adapters", lambda *a, **k: {"dev": object()})
+    monkeypatch.setattr(resolve, "build_context", lambda *a, **k: calls.setdefault("ctx", True))
+    monkeypatch.setattr(
+        resolve, "run_session", lambda *a, **k: calls.setdefault("session", True) or True
+    )
+    monkeypatch.setattr(cli, "_resume_paused_run", lambda proj, rd: 0)
+    run_dir = tmp_path / ".automator" / "runs" / "r1"
+    rc = cli.main(["resolve", "--project", str(tmp_path), "r1", "--resume"])
+    assert rc == 0
+    assert calls == {"ctx": True, "session": True}
+    assert load_state(run_dir).tasks["s1"].phase == Phase.PENDING
+
+
+def test_resolve_interactive_unsupported_adapter(tmp_path, monkeypatch, capsys):
+    from automator import resolve
+
+    _escalated_run(tmp_path, "r1")
+    monkeypatch.setattr(cli, "_make_adapters", lambda *a, **k: {"dev": object()})
+    monkeypatch.setattr(resolve, "build_context", lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise NotImplementedError
+
+    monkeypatch.setattr(resolve, "run_session", boom)
+    rc = cli.main(["resolve", "--project", str(tmp_path), "r1"])
+    assert rc == 1
+    assert "no interactive session mode" in capsys.readouterr().err
+
+
+def test_resolve_rearm_only_skips_resume(tmp_path, monkeypatch, capsys):
+    _escalated_run(tmp_path, "r1")
+    monkeypatch.setattr(
+        cli, "_resume_paused_run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("resumed"))
+    )
+    rc = cli.main(["resolve", "--project", str(tmp_path), "r1", "--no-interactive", "--no-resume"])
+    assert rc == 0
+    assert "resume when ready" in capsys.readouterr().out
+
+
 def test_sweep_command_parses_flags():
     parser_args = [
         "sweep",

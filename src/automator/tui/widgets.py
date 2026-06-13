@@ -131,6 +131,7 @@ class RunHeader(Static):
 
 # kind substrings -> style, first match wins; anything else renders dim
 _JOURNAL_STYLES = (
+    ("escalation-resolved", "green"),  # positive — must precede the "escalat" -> red rule
     ("escalat", "red"),
     ("failed", "red"),
     ("done", "green"),

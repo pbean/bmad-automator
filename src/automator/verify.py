@@ -123,6 +123,41 @@ def read_frontmatter(path: Path) -> dict[str, Any]:
     return doc if isinstance(doc, dict) else {}
 
 
+def set_frontmatter_status(path: Path, status: str) -> bool:
+    """Rewrite the `status:` field in a spec's `---`…`---` frontmatter block.
+
+    A minimal in-place line replacement (not a YAML round-trip) so the spec's
+    formatting, comments, and field order survive — only the status value
+    changes. Returns True when the file was rewritten, False when it has no
+    frontmatter or already carries `status`. Idempotent.
+    """
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return False
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return False
+    block_lines = parts[1].splitlines(keepends=True)
+    replaced = False
+    for i, line in enumerate(block_lines):
+        stripped = line.lstrip()
+        if stripped.startswith("status:") and not stripped.startswith("status_"):
+            indent = line[: len(line) - len(stripped)]
+            newline = "\n" if line.endswith("\n") else ""
+            block_lines[i] = f"{indent}status: {status}{newline}"
+            replaced = True
+            break
+    if not replaced:
+        return False
+    rebuilt = parts[0] + "---" + "".join(block_lines) + "---" + parts[2]
+    if rebuilt == text:  # already at the target value — idempotent no-op
+        return False
+    path.write_text(rebuilt, encoding="utf-8")
+    return True
+
+
 def resolve_spec_path(spec_file: str, paths: ProjectPaths) -> Path:
     p = Path(spec_file)
     if p.is_absolute():

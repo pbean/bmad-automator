@@ -106,7 +106,7 @@ class GenericTmuxAdapter(CodingCLIAdapter):
                 str(PANE_LINES),
             )
 
-    def build_command(self, spec: SessionSpec) -> str:
+    def interactive_argv(self, spec: SessionSpec) -> list[str]:
         extra = self.extra_args
         if extra is None:
             extra = self.profile.bypass_args
@@ -118,7 +118,13 @@ class GenericTmuxAdapter(CodingCLIAdapter):
         ]
         if spec.model:
             argv += [self.profile.model_flag, spec.model]
-        return " ".join(shlex.quote(a) for a in argv)
+        return argv
+
+    def interactive_env(self, spec: SessionSpec) -> dict[str, str]:
+        return {**self.profile.env, **spec.env}
+
+    def build_command(self, spec: SessionSpec) -> str:
+        return " ".join(shlex.quote(a) for a in self.interactive_argv(spec))
 
     # --------------------------------------------------------------- adapter
 

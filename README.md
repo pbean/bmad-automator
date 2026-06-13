@@ -59,6 +59,7 @@ bmad-auto tui                    # …or drive everything from the dashboard
 | `bmad-auto run`               | Drive the dev → review → verify → commit loop. `--epic N`, `--story KEY`, `--max-stories N`, `--dry-run`.                                                                                                                     |
 | `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                            |
 | `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                 |
+| `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                     |
 | `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals.                                                                                                                                                                             |
 | `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                    |
 | `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra).                                                                                                                                                                          |
@@ -113,6 +114,7 @@ Press **`g`** to edit `.automator/policy.toml` in a form grouped by section — 
 | --------- | ------------------------------------------------------------------ |
 | `r` / `s` | start a run / sweep (modal for epic, story, max-stories, dry-run…) |
 | `e`       | resume the selected paused/interrupted run                         |
+| `R`       | resolve a run paused at an escalation (interactive, then re-arm)   |
 | `a`       | attach to the live agent session (or the orchestrator window)      |
 | `v`       | run `bmad-auto validate`, output in a modal                        |
 | `g`       | settings editor for `.automator/policy.toml`                       |
@@ -145,6 +147,8 @@ sprint-status.yaml: 1-2-account-mgmt: ready-for-dev
 ```
 
 **Failure handling:** bounded dev retries (verify-command failures keep the tree and feed the failing output to the next session via `--feedback`; other failures roll back to baseline), **plateau-defer** when review won't converge (story skipped, spec stashed into the run dir, `deferred-work.md` additions preserved, run continues), and typed escalations — `CRITICAL` pauses the run and notifies you (desktop + `ATTENTION` file), `PREFERENCE` is journaled and the run continues.
+
+**Resolving a CRITICAL escalation:** the escalated story is parked in a terminal `escalated` phase — `resume` skips it. To un-stick it, run `bmad-auto resolve <run-id>` (or press `R` in the TUI). That opens an interactive **resolve agent** seeded with the escalation and the frozen spec; you converse with it to disambiguate the spec, it records the resolution, and on your confirmation the orchestrator re-arms the story (`escalated → pending`, spec status reset to `ready-for-dev`) and resumes — a clean rebuild against the corrected spec, then on through the rest of the sprint. Already fixed the spec yourself? `bmad-auto resolve <run-id> --no-interactive` skips straight to re-arm + resume.
 
 ## Deferred-work sweeps
 
@@ -262,7 +266,7 @@ max_cycles = 5             # safety cap on cycles per sweep run when repeat = tr
 
 ## Run state
 
-Everything about a run lives in `.automator/runs/<run-id>/` (gitignored): `state.json` (resumable engine state), `journal.jsonl` (every decision), `events/` (hook signals), `tasks/<id>/` (per-session prompt + result + escalations), `logs/` (raw pane output, debugging only), `deferred/` (stashed specs from deferred stories), `ATTENTION` (human-readable alerts).
+Everything about a run lives in `.automator/runs/<run-id>/` (gitignored): `state.json` (resumable engine state), `journal.jsonl` (every decision), `events/` (hook signals), `tasks/<id>/` (per-session prompt + result + escalations), `logs/` (raw pane output, debugging only), `deferred/` (stashed specs from deferred stories), `resolve/<story>/` (escalation `context.json` + the resolve agent's `resolution.json`), `ATTENTION` (human-readable alerts).
 
 Token usage is read from each CLI's local session transcript (selected by the profile's `usage_parser`) and aggregated per story (`bmad-auto status`).
 

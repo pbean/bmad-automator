@@ -11,7 +11,9 @@ import tarfile
 import time
 from pathlib import Path
 
+from . import verify
 from .journal import STATE_FILE, Journal, load_state, save_state
+from .model import PAUSE_ESCALATION, Phase
 
 RUNS_DIR = Path(".automator") / "runs"
 ARCHIVE_DIR = Path(".automator") / "archive"
@@ -179,3 +181,55 @@ def archive_run(project: Path, run_dir: Path) -> Path:
     os.replace(tmp, dest)
     shutil.rmtree(run_dir)
     return dest
+
+
+# ----------------------------------------------------------- escalation resolution
+
+
+class RearmError(Exception):
+    """The run/story is not in a re-armable escalation state."""
+
+
+def rearm_escalation(run_dir: Path, story_key: str | None = None) -> str:
+    """Re-arm an escalation-paused story so the next resume re-drives it.
+
+    Flips the escalated task out of its terminal ESCALATED phase back to
+    PENDING — which makes `_finish_inflight` reset the tree to the story's
+    baseline and re-run it (clean rebuild) against the now-corrected frozen
+    spec. Deterministically sets that spec's status to `ready-for-dev` so the
+    dev session routes straight to implement. Does NOT clear the pause; the
+    caller resumes the run separately.
+
+    Returns the re-armed story key. Raises RearmError when the run is not
+    paused at the escalation stage or the target story is not escalated.
+    """
+    state = load_state(run_dir)
+    if state.paused_stage != PAUSE_ESCALATION:
+        raise RearmError(
+            f"run {run_dir.name} is not paused at an escalation "
+            f"(stage: {state.paused_stage or 'none'})"
+        )
+    key = story_key or state.paused_story_key
+    if key is None:
+        raise RearmError(f"run {run_dir.name} has no escalated story to resolve")
+    task = state.tasks.get(key)
+    if task is None:
+        raise RearmError(f"run {run_dir.name} has no task for story {key}")
+    if task.phase != Phase.ESCALATED:
+        raise RearmError(f"story {key} is not escalated (phase: {task.phase})")
+
+    # deliberate reset, not a normal state-machine transition (mirrors
+    # engine._finish_inflight): a clean re-attempt against the corrected spec.
+    task.phase = Phase.PENDING
+    task.attempt = 0
+    task.review_cycle = 0
+    task.defer_reason = None
+
+    if task.spec_file:
+        # route /bmad-auto-dev to re-implement (decision table: ready-for-dev
+        # -> step-03); independent of the resolve agent having set it.
+        verify.set_frontmatter_status(Path(task.spec_file), "ready-for-dev")
+
+    save_state(run_dir, state)
+    Journal(run_dir).append("story-escalation-resolved", story_key=key)
+    return key

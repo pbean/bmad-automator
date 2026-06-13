@@ -63,6 +63,16 @@ class CodingCLIAdapter(ABC):
         """Nudge a running session. Optional capability."""
         raise NotImplementedError(f"{self.name} cannot inject into a running session")
 
+    def interactive_argv(self, spec: SessionSpec) -> list[str]:
+        """argv that launches the CLI agent attached to the caller's terminal,
+        seeded with spec.prompt. Used by the interactive escalation-resolution
+        flow; optional capability (e.g. HTTP adapters have no terminal)."""
+        raise NotImplementedError(f"{self.name} has no interactive (attached) session mode")
+
+    def interactive_env(self, spec: SessionSpec) -> dict[str, str]:
+        """Env vars to layer onto the caller's environment for interactive_argv."""
+        return dict(spec.env)
+
     def kill(self, handle: SessionHandle) -> None:  # noqa: B027 - optional cleanup
         pass
 

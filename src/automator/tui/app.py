@@ -95,6 +95,7 @@ class BmadAutoApp(App[None]):
         Binding("r", "start_run", "run"),
         Binding("s", "start_sweep", "sweep"),
         Binding("e", "resume_run", "resume"),
+        Binding("R", "resolve_run", "resolve"),
         Binding("a", "attach", "attach"),
         Binding("x", "stop_run", "stop"),
         Binding("D", "delete_run", "delete"),
@@ -278,6 +279,9 @@ class BmadAutoApp(App[None]):
                 timeout=10,
             )
             return
+        self._attach_to_target(target)
+
+    def _attach_to_target(self, target: str) -> None:
         argv = runs.attach_target_argv(target)
         if os.environ.get("TMUX"):
             subprocess.call(argv)  # switch-client: this client comes right back
@@ -291,6 +295,58 @@ class BmadAutoApp(App[None]):
                 severity="warning",
                 timeout=10,
             )
+
+    def action_resolve_run(self) -> None:
+        if self._tmux_missing():
+            return
+        run_id = self._dashboard.selected_run_id
+        if run_id is None:
+            self.notify("no run selected", severity="warning")
+            return
+        run_dir = self.project / RUNS_DIR / run_id
+        try:
+            state = load_state(run_dir)
+        except (OSError, KeyError, ValueError):
+            self.notify(f"state for run {run_id} is unreadable", severity="error")
+            return
+        if state.paused_stage != "escalation":
+            self.notify(
+                "resolve is only available for a run paused at an escalation",
+                severity="warning",
+            )
+            return
+        if data.liveness(run_dir) == "alive":
+            self.notify(f"run {run_id} is live — stop it first", severity="warning")
+            return
+        story = state.paused_story_key or "?"
+
+        def done(ok: bool | None) -> None:
+            if not ok:
+                return
+            try:
+                launch.start_resolve_detached(self.project, run_id)
+            except launch.LaunchError as e:
+                self.notify(str(e), severity="error")
+                return
+            window = launch.ctl_window(run_id)
+            if window is None:
+                self.notify(
+                    f"resolve launched but its {launch.CTL_SESSION} window was not found",
+                    severity="error",
+                )
+                return
+            launch.select_ctl_window(window)
+            self._attach_to_target(f"={launch.CTL_SESSION}")
+
+        self.push_screen(
+            ConfirmModal(
+                "resolve escalation",
+                f"open the resolve agent for {story}?\n"
+                "converse to fix the frozen spec, then confirm re-arm + resume in that window.",
+                confirm_label="resolve",
+            ),
+            done,
+        )
 
     # ------------------------------------------------------ stop / delete / archive
 

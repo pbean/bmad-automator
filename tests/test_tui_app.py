@@ -851,3 +851,51 @@ async def test_attach_falls_back_to_ctl_window(project, monkeypatch):
         await until(pilot, lambda: bool(calls))
     assert selected == ["run-20260611-100000-aaaa"]
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+
+
+async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
+    launched: list[str] = []
+    selected: list[str] = []
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(data, "liveness", lambda run_dir: "dead")
+    monkeypatch.setattr(launch, "start_resolve_detached", lambda proj, rid: launched.append(rid))
+    monkeypatch.setattr(launch, "ctl_window", lambda rid: f"resolve-{rid}")
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
+    calls = _patch_attach_exec(monkeypatch)
+    make_run(
+        project.project,
+        "20260611-100000-aaaa",
+        paused_stage="escalation",
+        paused_reason="CRITICAL escalation",
+    )
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).selected_run_id is not None)
+        await pilot.press("R")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmModal))
+        await pilot.click("#ok")
+        await until(pilot, lambda: bool(calls))
+    assert launched == ["20260611-100000-aaaa"]
+    assert selected == ["resolve-20260611-100000-aaaa"]
+    assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+
+
+async def test_resolve_refused_when_not_escalation(project, monkeypatch):
+    launched: list[str] = []
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(data, "liveness", lambda run_dir: "dead")
+    monkeypatch.setattr(launch, "start_resolve_detached", lambda proj, rid: launched.append(rid))
+    make_run(
+        project.project,
+        "20260611-100000-aaaa",
+        paused_stage="spec-approval",
+        paused_reason="awaiting approval",
+    )
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).selected_run_id is not None)
+        await pilot.press("R")
+        await until(pilot, lambda: any("escalation" in m for m in notifications(app)))
+    assert launched == []  # warned, never launched
