@@ -138,6 +138,93 @@ def test_run_honors_preassigned_run_id_and_writes_pid(project, monkeypatch):
     assert (run_dir / "engine.pid").read_text() == str(os.getpid())
 
 
+def _make_run_with_state(project, run_id, **state_kwargs):
+    from automator.journal import save_state
+    from automator.model import RunState
+
+    run_dir = project / ".automator" / "runs" / run_id
+    save_state(
+        run_dir,
+        RunState(run_id=run_id, project=str(project), started_at="now", **state_kwargs),
+    )
+    return run_dir
+
+
+def test_stop_no_such_run(tmp_path, capsys):
+    assert cli.main(["stop", "--project", str(tmp_path), "missing"]) == 1
+    assert "no such run" in capsys.readouterr().err
+
+
+def test_stop_marks_stopped(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    run_dir = _make_run_with_state(tmp_path, "r1")  # no pid -> fallback marks stopped
+    assert cli.main(["stop", "--project", str(tmp_path), "r1"]) == 0
+    assert "r1 stopped" in capsys.readouterr().out
+    from automator.journal import load_state
+
+    assert load_state(run_dir).stopped is True
+
+
+def test_stop_already_finished(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    _make_run_with_state(tmp_path, "r1", finished=True)
+    assert cli.main(["stop", "--project", str(tmp_path), "r1"]) == 1
+    assert "already finished" in capsys.readouterr().err
+
+
+def test_delete_refuses_live_run_without_force(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    monkeypatch.setattr(runs, "engine_alive", lambda _rd: True)
+    run_dir = _make_run_with_state(tmp_path, "r1")
+    assert cli.main(["delete", "--project", str(tmp_path), "r1"]) == 1
+    assert "stop it first" in capsys.readouterr().err
+    assert run_dir.exists()
+
+
+def test_delete_force_stops_then_removes(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    stopped = []
+    monkeypatch.setattr(runs, "engine_alive", lambda _rd: True)
+    monkeypatch.setattr(runs, "stop_run", lambda rd: stopped.append(rd) or True)
+    run_dir = _make_run_with_state(tmp_path, "r1")
+    assert cli.main(["delete", "--project", str(tmp_path), "r1", "--force"]) == 0
+    assert "r1 deleted" in capsys.readouterr().out
+    assert stopped == [run_dir]
+    assert not run_dir.exists()
+
+
+def test_delete_dead_run(tmp_path, capsys):
+    run_dir = _make_run_with_state(tmp_path, "r1")  # no pid -> not alive
+    assert cli.main(["delete", "--project", str(tmp_path), "r1"]) == 0
+    assert not run_dir.exists()
+
+
+def test_archive_creates_tarball_and_removes_run(tmp_path, capsys):
+    run_dir = _make_run_with_state(tmp_path, "20260611-100000-aaaa")
+    assert cli.main(["archive", "--project", str(tmp_path), "20260611-100000-aaaa"]) == 0
+    out = capsys.readouterr().out
+    dest = tmp_path / ".automator" / "archive" / "20260611-100000-aaaa.tar.gz"
+    assert "archived to" in out
+    assert dest.is_file()
+    assert not run_dir.exists()
+
+
+def test_archive_refuses_live_run_without_force(tmp_path, monkeypatch, capsys):
+    from automator import runs
+
+    monkeypatch.setattr(runs, "engine_alive", lambda _rd: True)
+    run_dir = _make_run_with_state(tmp_path, "r1")
+    assert cli.main(["archive", "--project", str(tmp_path), "r1"]) == 1
+    assert "stop it first" in capsys.readouterr().err
+    assert run_dir.exists()
+
+
 def test_sweep_command_parses_flags():
     parser_args = [
         "sweep",

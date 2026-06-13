@@ -9,6 +9,7 @@ verify. All creative work happens inside disposable adapter sessions.
 from __future__ import annotations
 
 import shutil
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -34,6 +35,7 @@ from .model import (
     StoryTask,
 )
 from .policy import Policy
+from .runs import kill_session
 from .sprintstatus import load as load_sprint_status
 from .sprintstatus import next_actionable
 from .statemachine import advance
@@ -45,6 +47,12 @@ class RunPaused(Exception):
         self.reason = reason
         self.stage = stage
         self.story_key = story_key
+
+
+class RunStopped(Exception):
+    """Raised from the SIGTERM/SIGINT handler to unwind the loop cleanly so the
+    engine can mark the run `stopped` (a deliberate stop, distinct from a
+    crash) and tear down its in-flight agent session."""
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,10 @@ class RunSummary:
 
 
 class Engine:
+    # The engine that installed the process-wide stop handlers; nested
+    # auto-sweep runs (same process) see it set and let RunStopped propagate up.
+    _stop_signals_owner: "Engine | None" = None
+
     def __init__(
         self,
         paths: ProjectPaths,
@@ -97,29 +109,82 @@ class Engine:
         # spawns a child deferred-work sweep run (injected by the CLI to
         # avoid an engine -> sweep import cycle); see _maybe_auto_sweep
         self.sweep_factory = sweep_factory
+        # stop-signal bookkeeping (see run())
+        self._owns_signals = False
+        self._stopping = False
+        self._prev_handlers: dict[int, object] = {}
 
     # ------------------------------------------------------------- top level
 
     def run(self) -> RunSummary:
+        self._install_stop_signals()
         try:
-            self._loop()
-            self.state.finished = True
-            self.journal.append("run-complete")
-        except RunPaused as pause:
-            self.state.paused_reason = pause.reason
-            self.state.paused_stage = pause.stage
-            self.state.paused_story_key = pause.story_key
-            self.journal.append(
-                "run-paused",
-                reason=pause.reason,
-                stage=pause.stage,
-                story_key=pause.story_key,
-            )
+            try:
+                self._loop()
+                self.state.finished = True
+                self.journal.append("run-complete")
+            except RunPaused as pause:
+                self.state.paused_reason = pause.reason
+                self.state.paused_stage = pause.stage
+                self.state.paused_story_key = pause.story_key
+                self.journal.append(
+                    "run-paused",
+                    reason=pause.reason,
+                    stage=pause.stage,
+                    story_key=pause.story_key,
+                )
+            except RunStopped:
+                # the loop was interrupted inside adapter.run(), so the agent
+                # window is still live — tear the whole run session down.
+                kill_session(self.state.run_id)
+                if not self._owns_signals:
+                    raise  # nested auto-sweep: let the owner record the stop
+                self.state.stopped = True
+                self.journal.append("run-stop")
+            finally:
+                self._save()
         finally:
-            self._save()
+            self._restore_stop_signals()
         summary = self.summary()
         gates.notify(self.policy, self.run_dir, "bmad-auto run finished", summary.render())
         return summary
+
+    # ---------------------------------------------------------- stop signals
+
+    def _install_stop_signals(self) -> None:
+        """Make SIGTERM/SIGINT unwind the loop as a RunStopped. Only the
+        outermost engine in the process owns the handlers (nested auto-sweep
+        runs let the exception propagate up to it); install is best-effort and
+        silently skipped off the main thread (signal.signal raises there)."""
+        if Engine._stop_signals_owner is not None:
+            return
+
+        def handler(signum, frame):  # noqa: ANN001 - stdlib signal signature
+            if self._stopping:
+                return  # already unwinding; don't re-raise during teardown
+            self._stopping = True
+            raise RunStopped()
+
+        try:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                self._prev_handlers[sig] = signal.signal(sig, handler)
+        except ValueError:
+            # not on the main thread — cannot install; degrade to no handler
+            self._restore_stop_signals()
+            return
+        self._owns_signals = True
+        Engine._stop_signals_owner = self
+
+    def _restore_stop_signals(self) -> None:
+        for sig, prev in self._prev_handlers.items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, TypeError):
+                pass
+        self._prev_handlers.clear()
+        if Engine._stop_signals_owner is self:
+            Engine._stop_signals_owner = None
+        self._owns_signals = False
 
     def summary(self) -> RunSummary:
         tasks = self.state.tasks.values()

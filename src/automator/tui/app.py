@@ -96,6 +96,9 @@ class BmadAutoApp(App[None]):
         Binding("s", "start_sweep", "sweep"),
         Binding("e", "resume_run", "resume"),
         Binding("a", "attach", "attach"),
+        Binding("x", "stop_run", "stop"),
+        Binding("D", "delete_run", "delete"),
+        Binding("A", "archive_run", "archive"),
         Binding("v", "validate", "validate"),
         Binding("g", "settings", "settings"),
         Binding("d", "toggle_dark", "dark"),
@@ -288,6 +291,109 @@ class BmadAutoApp(App[None]):
                 severity="warning",
                 timeout=10,
             )
+
+    # ------------------------------------------------------ stop / delete / archive
+
+    def _selected_run_dir(self) -> tuple[str, Path] | None:
+        run_id = self._dashboard.selected_run_id
+        if run_id is None:
+            self.notify("no run selected", severity="warning")
+            return None
+        return run_id, self.project / RUNS_DIR / run_id
+
+    def action_stop_run(self) -> None:
+        if self._tmux_missing():
+            return
+        selected = self._selected_run_dir()
+        if selected is None:
+            return
+        run_id, run_dir = selected
+        if not data.liveness(run_dir) == "alive":
+            self.notify(f"run {run_id} is not live", severity="warning")
+            return
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._stop_run_worker(run_id, run_dir)
+
+        self.push_screen(
+            ConfirmModal("stop run", f"stop run {run_id}?", confirm_label="stop"), done
+        )
+
+    @work(thread=True, group="lifecycle")
+    def _stop_run_worker(self, run_id: str, run_dir: Path) -> None:
+        try:
+            runs.stop_run(run_dir)
+            launch.kill_ctl_window(run_id)
+        except OSError as e:
+            self.call_from_thread(self.notify, f"stop failed: {e}", severity="error")
+            return
+        self.call_from_thread(self.notify, f"run {run_id} stopped")
+
+    def action_delete_run(self) -> None:
+        selected = self._selected_run_dir()
+        if selected is None:
+            return
+        run_id, run_dir = selected
+        if data.liveness(run_dir) == "alive":
+            self.notify(f"run {run_id} is live — stop it first", severity="warning")
+            return
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._delete_run_worker(run_id, run_dir)
+
+        self.push_screen(
+            ConfirmModal(
+                "delete run",
+                f"permanently delete run {run_id}?",
+                confirm_label="delete",
+                warning="this cannot be undone",
+            ),
+            done,
+        )
+
+    @work(thread=True, group="lifecycle")
+    def _delete_run_worker(self, run_id: str, run_dir: Path) -> None:
+        try:
+            runs.delete_run(run_dir)
+        except OSError as e:
+            self.call_from_thread(self.notify, f"delete failed: {e}", severity="error")
+            return
+        self.call_from_thread(self._dashboard.forget_run, run_id)
+        self.call_from_thread(self.notify, f"run {run_id} deleted")
+
+    def action_archive_run(self) -> None:
+        selected = self._selected_run_dir()
+        if selected is None:
+            return
+        run_id, run_dir = selected
+        if data.liveness(run_dir) == "alive":
+            self.notify(f"run {run_id} is live — stop it first", severity="warning")
+            return
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._archive_run_worker(run_id, run_dir)
+
+        self.push_screen(
+            ConfirmModal(
+                "archive run",
+                f"archive run {run_id} to .automator/archive?",
+                confirm_label="archive",
+            ),
+            done,
+        )
+
+    @work(thread=True, group="lifecycle")
+    def _archive_run_worker(self, run_id: str, run_dir: Path) -> None:
+        try:
+            dest = runs.archive_run(self.project, run_dir)
+        except OSError as e:
+            self.call_from_thread(self.notify, f"archive failed: {e}", severity="error")
+            return
+        self.call_from_thread(self._dashboard.forget_run, run_id)
+        self.call_from_thread(self.notify, f"run {run_id} archived to {dest}")
 
     def action_validate(self) -> None:
         self._show_captured("validate", ["validate", "--project", str(self.project)])

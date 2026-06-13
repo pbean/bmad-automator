@@ -471,6 +471,57 @@ def cmd_attach(args: argparse.Namespace) -> int:
     return subprocess.call(runs.attach_argv(run_dir.name))
 
 
+def cmd_stop(args: argparse.Namespace) -> int:
+    project = _project(args)
+    run_dir = runs.run_dir_for(project, args.run_id)
+    if not runs.is_run(run_dir):
+        print(f"no such run: {args.run_id}", file=sys.stderr)
+        return 1
+    if not runs.stop_run(run_dir):
+        print(f"run {args.run_id} already finished", file=sys.stderr)
+        return 1
+    print(f"run {args.run_id} stopped")
+    return 0
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    project = _project(args)
+    run_dir = runs.run_dir_for(project, args.run_id)
+    if not runs.is_run(run_dir):
+        print(f"no such run: {args.run_id}", file=sys.stderr)
+        return 1
+    if runs.engine_alive(run_dir):
+        if not args.force:
+            print(
+                f"run {args.run_id} is still live — stop it first (or pass --force)",
+                file=sys.stderr,
+            )
+            return 1
+        runs.stop_run(run_dir)
+    runs.delete_run(run_dir)
+    print(f"run {args.run_id} deleted")
+    return 0
+
+
+def cmd_archive(args: argparse.Namespace) -> int:
+    project = _project(args)
+    run_dir = runs.run_dir_for(project, args.run_id)
+    if not runs.is_run(run_dir):
+        print(f"no such run: {args.run_id}", file=sys.stderr)
+        return 1
+    if runs.engine_alive(run_dir):
+        if not args.force:
+            print(
+                f"run {args.run_id} is still live — stop it first (or pass --force)",
+                file=sys.stderr,
+            )
+            return 1
+        runs.stop_run(run_dir)
+    dest = runs.archive_run(project, run_dir)
+    print(f"run {args.run_id} archived to {dest}")
+    return 0
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     project = _project(args)
     try:
@@ -564,6 +615,21 @@ def main(argv: list[str] | None = None) -> int:
 
     attach_p = add("attach", cmd_attach, "tmux attach to a run's session")
     attach_p.add_argument("run_id", nargs="?")
+
+    stop_p = add("stop", cmd_stop, "stop a live run (engine + agent session)")
+    stop_p.add_argument("run_id")
+
+    delete_p = add("delete", cmd_delete, "delete a run directory")
+    delete_p.add_argument("run_id")
+    delete_p.add_argument(
+        "--force", action="store_true", help="stop the run first if it is still live"
+    )
+
+    archive_p = add("archive", cmd_archive, "compress a run into .automator/archive and remove it")
+    archive_p.add_argument("run_id")
+    archive_p.add_argument(
+        "--force", action="store_true", help="stop the run first if it is still live"
+    )
 
     add(
         "tui",

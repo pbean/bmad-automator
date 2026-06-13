@@ -2,8 +2,12 @@
 
 import os
 import re
+import subprocess
+import tarfile
 
 from automator import runs
+from automator.journal import load_state, save_state
+from automator.model import RunState
 
 
 def _make_run(project, run_id, with_state=True):
@@ -12,6 +16,26 @@ def _make_run(project, run_id, with_state=True):
     if with_state:
         (run_dir / "state.json").write_text("{}")
     return run_dir
+
+
+def _make_state_run(project, run_id, **state_kwargs):
+    run_dir = project / ".automator" / "runs" / run_id
+    save_state(
+        run_dir,
+        RunState(
+            run_id=run_id,
+            project=str(project),
+            started_at="2026-06-11T10:00:00",
+            **state_kwargs,
+        ),
+    )
+    return run_dir
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
 
 
 def test_list_run_dirs_sorted_and_filtered(tmp_path):
@@ -50,3 +74,119 @@ def test_attach_argv_outside_tmux(monkeypatch):
 def test_attach_argv_inside_tmux(monkeypatch):
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
     assert runs.attach_argv("r1") == ["tmux", "switch-client", "-t", "=bmad-auto-r1"]
+
+
+# --------------------------------------------------------- resolution / liveness
+
+
+def test_run_dir_for_and_is_run(tmp_path):
+    run_dir = _make_run(tmp_path, "r1")
+    assert runs.run_dir_for(tmp_path, "r1") == run_dir
+    assert runs.is_run(run_dir)
+    assert not runs.is_run(tmp_path / ".automator" / "runs" / "nope")
+
+
+def test_read_pid_missing_and_garbage(tmp_path):
+    run_dir = _make_run(tmp_path, "r1")
+    assert runs.read_pid(run_dir) is None
+    (run_dir / "engine.pid").write_text("not-a-pid")
+    assert runs.read_pid(run_dir) is None
+    (run_dir / "engine.pid").write_text("4242")
+    assert runs.read_pid(run_dir) == 4242
+
+
+def test_engine_alive(tmp_path):
+    run_dir = _make_run(tmp_path, "r1")
+    assert runs.engine_alive(run_dir) is False  # no pid file
+    runs.write_pid(run_dir)  # this test process: alive
+    assert runs.engine_alive(run_dir) is True
+    (run_dir / "engine.pid").write_text(str(_dead_pid()))
+    assert runs.engine_alive(run_dir) is False
+
+
+# ---------------------------------------------------------------- stop / delete
+
+
+def test_stop_run_already_finished(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    run_dir = _make_state_run(tmp_path, "r1", finished=True)
+    assert runs.stop_run(run_dir) is False
+    assert load_state(run_dir).stopped is False
+
+
+def test_stop_run_no_pid_falls_back_to_mark(tmp_path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(runs, "kill_session", lambda rid: killed.append(rid))
+    run_dir = _make_state_run(tmp_path, "r1")  # no engine.pid -> legacy/dead
+    assert runs.stop_run(run_dir) is True
+    assert load_state(run_dir).stopped is True
+    assert killed == ["r1"]
+    journal = (run_dir / "journal.jsonl").read_text()
+    assert "run-stop" in journal and '"fallback": true' in journal
+
+
+def test_stop_run_dead_pid_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    run_dir = _make_state_run(tmp_path, "r1")
+    (run_dir / "engine.pid").write_text(str(_dead_pid()))
+    assert runs.stop_run(run_dir) is True
+    assert load_state(run_dir).stopped is True
+
+
+def test_stop_run_signals_live_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    run_dir = _make_state_run(tmp_path, "r1")
+    proc = subprocess.Popen(["sleep", "30"])
+    (run_dir / "engine.pid").write_text(str(proc.pid))
+    assert runs.stop_run(run_dir) is True
+    # the process received SIGTERM and is gone
+    assert proc.poll() is not None or proc.wait(timeout=5) is not None
+    assert load_state(run_dir).stopped is True
+
+
+def test_stop_run_respects_engine_written_stopped(tmp_path, monkeypatch):
+    """When a live engine exits having already marked the run stopped, stop_run
+    trusts it and does not re-journal a fallback entry."""
+    monkeypatch.setattr(runs, "kill_session", lambda _rid: None)
+    run_dir = _make_state_run(tmp_path, "r1")
+    proc = subprocess.Popen(["sleep", "30"])
+    (run_dir / "engine.pid").write_text(str(proc.pid))
+
+    real_kill = os.kill
+
+    def fake_kill(pid, sig):
+        # emulate the engine handler marking stopped, then dying on SIGTERM
+        if pid == proc.pid and sig != 0:
+            st = load_state(run_dir)
+            st.stopped = True
+            save_state(run_dir, st)
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(runs.os, "kill", fake_kill)
+    assert runs.stop_run(run_dir) is True
+    proc.wait(timeout=5)
+    assert load_state(run_dir).stopped is True
+    # trusted the engine: no fallback journal entry written
+    journal = run_dir / "journal.jsonl"
+    assert not journal.exists() or "fallback" not in journal.read_text()
+
+
+def test_delete_run(tmp_path):
+    run_dir = _make_state_run(tmp_path, "r1")
+    runs.delete_run(run_dir)
+    assert not run_dir.exists()
+
+
+def test_archive_run(tmp_path):
+    run_dir = _make_state_run(tmp_path, "20260611-100000-aaaa")
+    (run_dir / "journal.jsonl").write_text('{"kind":"x"}\n')
+    dest = runs.archive_run(tmp_path, run_dir)
+
+    assert dest == tmp_path / ".automator" / "archive" / "20260611-100000-aaaa.tar.gz"
+    assert dest.is_file()
+    assert not run_dir.exists()  # original removed
+    assert not dest.with_suffix(".tar.gz.tmp").exists()  # temp cleaned via replace
+    with tarfile.open(dest) as tar:
+        names = tar.getnames()
+    assert "20260611-100000-aaaa/state.json" in names
+    assert "20260611-100000-aaaa/journal.jsonl" in names

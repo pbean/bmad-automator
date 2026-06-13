@@ -37,6 +37,7 @@ from ..runs import PID_FILE, list_run_dirs, session_name
 RUNNING = "running"
 PAUSED = "paused"
 FINISHED = "finished"
+STOPPED = "stopped"
 INTERRUPTED = "interrupted"
 UNKNOWN = "unknown"
 
@@ -92,11 +93,15 @@ def _tmux_liveness(run_id: str) -> str:
     return "alive" if proc.returncode == 0 else "unknown"
 
 
-def _classify(finished: bool, paused: bool, run_dir: Path) -> str:
+def _classify(finished: bool, paused: bool, stopped: bool, run_dir: Path) -> str:
     if finished:
         return FINISHED
     if paused:
         return PAUSED
+    # a deliberate stop leaves a dead pid — check it before liveness so it does
+    # not read as INTERRUPTED (a crash).
+    if stopped:
+        return STOPPED
     live = liveness(run_dir)
     if live == "alive":
         return RUNNING
@@ -117,8 +122,8 @@ class RunInfo:
     status: str
 
 
-# state.json path -> (stat sig, (run_type, started_at, finished, paused))
-_header_cache: dict[Path, tuple[_StatSig, tuple[str, str, bool, bool]]] = {}
+# state.json path -> (stat sig, (run_type, started_at, finished, paused, stopped))
+_header_cache: dict[Path, tuple[_StatSig, tuple[str, str, bool, bool, bool]]] = {}
 
 
 def discover_runs(project: Path) -> list[RunInfo]:
@@ -134,7 +139,7 @@ def discover_runs(project: Path) -> list[RunInfo]:
         sig = _stat_sig(state_path)
         cached = _header_cache.get(state_path)
         if sig is not None and cached is not None and cached[0] == sig:
-            run_type, started_at, finished, paused = cached[1]
+            run_type, started_at, finished, paused, stopped = cached[1]
         else:
             try:
                 doc = json.loads(state_path.read_text(encoding="utf-8"))
@@ -142,15 +147,16 @@ def discover_runs(project: Path) -> list[RunInfo]:
                 started_at = str(doc.get("started_at", ""))
                 finished = bool(doc.get("finished", False))
                 paused = doc.get("paused_reason") is not None
+                stopped = bool(doc.get("stopped", False))
             except (OSError, json.JSONDecodeError):
                 out.append(RunInfo(run_dir.name, run_dir, "?", "", UNKNOWN))
                 continue
             if sig is not None:
                 _header_cache[state_path] = (
                     sig,
-                    (run_type, started_at, finished, paused),
+                    (run_type, started_at, finished, paused, stopped),
                 )
-        status = _classify(finished, paused, run_dir)
+        status = _classify(finished, paused, stopped, run_dir)
         out.append(RunInfo(run_dir.name, run_dir, run_type, started_at, status))
     return out
 
@@ -187,7 +193,7 @@ class RunWatcher:
         state = self.state()
         if state is None:
             return UNKNOWN
-        return _classify(state.finished, state.paused, self.run_dir)
+        return _classify(state.finished, state.paused, state.stopped, self.run_dir)
 
     def attention(self) -> str:
         path = self.run_dir / ATTENTION_FILE

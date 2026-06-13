@@ -57,6 +57,14 @@ def select_ctl_window(window: str) -> None:
     _tmux("select-window", "-t", f"={CTL_SESSION}:{window}")
 
 
+def kill_ctl_window(run_id: str) -> None:
+    """Kill the control-session window hosting this run's orchestrator process,
+    if any. A no-op when the run was not launched from the TUI or tmux is gone."""
+    window = ctl_window(run_id)
+    if window is not None:
+        _tmux("kill-window", "-t", f"={CTL_SESSION}:{window}")
+
+
 def _ensure_ctl_session(project: Path) -> None:
     if session_exists(CTL_SESSION):
         return

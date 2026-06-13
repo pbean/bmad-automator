@@ -188,6 +188,9 @@ class RunState:
     paused_stage: str | None = None
     paused_story_key: str | None = None
     finished: bool = False
+    # deliberately stopped (bmad-auto stop / engine SIGTERM); distinct from a
+    # crash. Resume clears it via clear_pause(), so a stopped run is resumable.
+    stopped: bool = False
     run_type: str = "story"  # "story" | "sweep" — resume/status dispatch on it
     # sweep runs only: the triage->bundles cycle in progress; 1 maps to the
     # legacy (unsuffixed) artifact names so old paused runs resume unchanged
@@ -209,6 +212,7 @@ class RunState:
         self.paused_reason = None
         self.paused_stage = None
         self.paused_story_key = None
+        self.stopped = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,6 +225,7 @@ class RunState:
             "paused_stage": self.paused_stage,
             "paused_story_key": self.paused_story_key,
             "finished": self.finished,
+            "stopped": self.stopped,
             "run_type": self.run_type,
             "sweep_cycle": self.sweep_cycle,
             "sweeps_triggered": self.sweeps_triggered,
@@ -239,6 +244,7 @@ class RunState:
             paused_stage=d.get("paused_stage"),
             paused_story_key=d.get("paused_story_key"),
             finished=bool(d.get("finished", False)),
+            stopped=bool(d.get("stopped", False)),
             run_type=str(d.get("run_type", "story")),
             sweep_cycle=int(d.get("sweep_cycle", 1)),
             sweeps_triggered=[str(s) for s in d.get("sweeps_triggered", [])],

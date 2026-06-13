@@ -78,6 +78,19 @@ def test_discover_runs_classification(tmp_path):
     assert [i.status for i in data.discover_runs(tmp_path)] == [i.status for i in infos]
 
 
+def test_stopped_run_classifies_as_stopped_not_interrupted(tmp_path):
+    # a deliberate stop leaves a dead pid; it must read STOPPED, not INTERRUPTED
+    run_dir = make_run(tmp_path, "20260611-100000-aaaa", stopped=True)
+    (run_dir / "engine.pid").write_text(str(dead_pid()))
+    assert data.discover_runs(tmp_path)[0].status == data.STOPPED
+    assert data.RunWatcher(run_dir).status() == data.STOPPED
+
+
+def test_finished_beats_stopped(tmp_path):
+    make_run(tmp_path, "20260611-100000-aaaa", finished=True, stopped=True)
+    assert data.discover_runs(tmp_path)[0].status == data.FINISHED
+
+
 def test_discover_runs_legacy_no_pid_is_unknown(tmp_path, monkeypatch):
     make_run(tmp_path, "20260611-100000-aaaa")
     monkeypatch.setattr(data.shutil, "which", lambda _: None)

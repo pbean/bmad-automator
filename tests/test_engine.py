@@ -1,12 +1,15 @@
 """Engine scenario tests against the mock adapter — no tmux, no LLM."""
 
+import os
+import signal
 from pathlib import Path
 
+import pytest
 from conftest import dev_effect, review_effect, spec_path, write_sprint
 
 from automator.adapters.base import SessionResult
 from automator.adapters.mock import MockAdapter
-from automator.engine import Engine
+from automator.engine import Engine, RunStopped
 from automator.journal import Journal, load_state
 from automator.model import (
     PAUSE_EPIC_BOUNDARY,
@@ -682,3 +685,51 @@ def test_journal_log_position_covers_post_session_entries(project):
     assert dev_decision["log_task"] == starts[0]["task_id"]
     story_done = next(e for e in entries if e["kind"] == "story-done")
     assert story_done["log_task"] == starts[-1]["task_id"]
+
+
+# ----------------------------------------------------------- stop / SIGTERM
+
+
+def test_run_stopped_via_real_signal(project, monkeypatch):
+    """SIGTERM unwinds the loop as RunStopped: the run is marked stopped, the
+    agent session is torn down, and the prior signal handlers are restored."""
+    killed = []
+    monkeypatch.setattr("automator.engine.kill_session", lambda rid: killed.append(rid))
+    engine, _ = make_engine(project, [])
+    monkeypatch.setattr(engine, "_loop", lambda: os.kill(os.getpid(), signal.SIGTERM))
+
+    prev_term = signal.getsignal(signal.SIGTERM)
+    prev_int = signal.getsignal(signal.SIGINT)
+    summary = engine.run()
+
+    assert summary is not None
+    assert load_state(engine.run_dir).stopped is True
+    assert killed == ["test-run"]
+    assert "run-stop" in (engine.run_dir / "journal.jsonl").read_text()
+    assert signal.getsignal(signal.SIGTERM) is prev_term
+    assert signal.getsignal(signal.SIGINT) is prev_int
+    assert Engine._stop_signals_owner is None
+
+
+def test_nested_engine_reraises_runstopped(project, monkeypatch):
+    """A nested auto-sweep engine does not own the handlers, so it re-raises
+    RunStopped for the outer (owning) engine to record — it still tears down
+    its own agent session."""
+    killed = []
+    monkeypatch.setattr("automator.engine.kill_session", lambda rid: killed.append(rid))
+    engine, _ = make_engine(project, [])
+
+    def boom():
+        raise RunStopped()
+
+    monkeypatch.setattr(engine, "_loop", boom)
+    sentinel = object()
+    Engine._stop_signals_owner = sentinel  # pretend an outer engine owns signals
+    try:
+        with pytest.raises(RunStopped):
+            engine.run()
+    finally:
+        Engine._stop_signals_owner = None
+
+    assert load_state(engine.run_dir).stopped is False  # owner records it, not us
+    assert killed == ["test-run"]

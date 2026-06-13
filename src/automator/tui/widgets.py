@@ -24,6 +24,7 @@ STATUS_GLYPHS = {
     data.RUNNING: "▶",
     data.PAUSED: "⏸",
     data.FINISHED: "✔",
+    data.STOPPED: "⏹",
     data.INTERRUPTED: "✖",
     data.UNKNOWN: "?",
 }
@@ -32,6 +33,7 @@ STATUS_STYLES = {
     data.RUNNING: "green",
     data.PAUSED: "yellow",
     data.FINISHED: "dim",
+    data.STOPPED: "bold yellow",
     data.INTERRUPTED: "bold red",
     data.UNKNOWN: "dim",
 }

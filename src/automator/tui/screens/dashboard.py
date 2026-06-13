@@ -219,6 +219,13 @@ class DashboardScreen(Screen[None]):
         self.query_one("#runheader", RunHeader).show_run(run_id, data.UNKNOWN, None)
         self._tick(force_rescan=False)
 
+    def forget_run(self, run_id: str) -> None:
+        """A run dir was just removed (delete/archive): drop the selection when
+        it was the gone run and rescan so the table rebuilds and re-selects."""
+        if self._ctx is not None and self._ctx.run_dir.name == run_id:
+            self._ctx = None
+        self._tick(force_rescan=True)
+
     def expect_run(self, run_id: str) -> None:
         """A launch just happened: select the run before its dir exists, show
         a 'starting' header until state.json appears, and complain past the
