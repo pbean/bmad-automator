@@ -503,6 +503,17 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     if args.resume is False:
         print(f"resume when ready: bmad-auto resume {args.run_id}")
         return 0
+    from .tui import launch  # import-safe: launch.py has no textual imports
+
+    if launch.in_ctl_session():
+        # We are inside the TUI's bmad-auto-ctl window the user is attached to.
+        # Tell them, hand the terminal back, and let the engine run on here — a
+        # tmux pane keeps running after its client detaches.
+        print(
+            f"✓ resuming run {args.run_id} in the background — "
+            f"watch it in the TUI, or: bmad-auto attach {args.run_id}"
+        )
+        launch.detach_client()
     return _resume_paused_run(project, run_dir)
 
 

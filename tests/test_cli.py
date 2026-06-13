@@ -338,6 +338,20 @@ def test_resolve_interactive_unsupported_adapter(tmp_path, monkeypatch, capsys):
     assert "no interactive session mode" in capsys.readouterr().err
 
 
+def test_resolve_in_ctl_session_detaches_before_resume(tmp_path, monkeypatch, capsys):
+    from automator.tui import launch
+
+    _escalated_run(tmp_path, "r1")
+    order = []
+    monkeypatch.setattr(launch, "in_ctl_session", lambda: True)
+    monkeypatch.setattr(launch, "detach_client", lambda: order.append("detach"))
+    monkeypatch.setattr(cli, "_resume_paused_run", lambda proj, rd: order.append("resume") or 0)
+    rc = cli.main(["resolve", "--project", str(tmp_path), "r1", "--no-interactive", "--resume"])
+    assert rc == 0
+    assert order == ["detach", "resume"]  # hand terminal back, then run the engine
+    assert "in the background" in capsys.readouterr().out
+
+
 def test_resolve_rearm_only_skips_resume(tmp_path, monkeypatch, capsys):
     _escalated_run(tmp_path, "r1")
     monkeypatch.setattr(

@@ -11,6 +11,7 @@ No textual imports here — everything is subprocess-level and unit-testable.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -57,6 +58,31 @@ def select_ctl_window(window: str) -> None:
     _tmux("select-window", "-t", f"={CTL_SESSION}:{window}")
 
 
+def select_ctl_window_id(window_id: str) -> None:
+    """Like select_ctl_window but by stable tmux window id (@N). Immune to the
+    by-name first-match ambiguity in ctl_window and to tmux auto-rename."""
+    _tmux("select-window", "-t", window_id)
+
+
+def current_session() -> str | None:
+    """Name of the tmux session this process is running inside, or None when
+    not in tmux / tmux is unavailable."""
+    proc = _tmux("display-message", "-p", "#{session_name}")
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def in_ctl_session() -> bool:
+    """True when we are running inside a control-session window (i.e. launched
+    detached by the TUI), as opposed to a user's own shell."""
+    return bool(os.environ.get("TMUX")) and current_session() == CTL_SESSION
+
+
+def detach_client() -> None:
+    """Detach the tmux client viewing the current session, handing the terminal
+    back to the user. Processes in the session keep running."""
+    _tmux("detach-client")
+
+
 def kill_ctl_window(run_id: str) -> None:
     """Kill the control-session window hosting this run's orchestrator process,
     if any. A no-op when the run was not launched from the TUI or tmux is gone."""
@@ -79,12 +105,15 @@ def cli_argv(*tail: str) -> list[str]:
     return [sys.executable, "-m", "automator.cli", *tail]
 
 
-def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) -> None:
+def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) -> str | None:
     """Run a bmad-auto command in a new window of the control session.
 
     The window runs under explicit `sh -c` (the user's login shell may be
     fish); the trailing `read` keeps the exit status inspectable instead of
     tmux closing the window the moment the process exits.
+
+    Returns the new window's stable tmux id (@N) so callers can target it
+    unambiguously (window names collide when several kinds share a run_id).
     """
     if not tmux_available():
         raise LaunchError("tmux not found on PATH")
@@ -94,6 +123,9 @@ def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) 
     proc = _tmux(
         "new-window",
         "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
         "-t",
         f"={CTL_SESSION}:",
         "-n",
@@ -106,6 +138,7 @@ def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) 
     )
     if proc.returncode != 0:
         raise LaunchError(f"tmux new-window failed: {proc.stderr.strip()}")
+    return proc.stdout.strip() or None
 
 
 def start_run_detached(
@@ -148,11 +181,14 @@ def resume_detached(project: Path, run_id: str) -> None:
     start_detached(project, ["resume", "--project", str(project), run_id], run_id, "resume")
 
 
-def start_resolve_detached(project: Path, run_id: str) -> None:
+def start_resolve_detached(project: Path, run_id: str) -> str | None:
     """Run `bmad-auto resolve <run_id>` in a ctl-session window. The caller
     attaches to it: the resolve agent is interactive, and the post-session
-    confirm + resume happen in that same window."""
-    start_detached(project, ["resolve", "--project", str(project), run_id], run_id, "resolve")
+    confirm + resume happen in that same window. Returns the window id so the
+    caller attaches to exactly this window, not a stale same-run_id window."""
+    return start_detached(
+        project, ["resolve", "--project", str(project), run_id], run_id, "resolve"
+    )
 
 
 def run_captured(argv_tail: list[str]) -> tuple[int, str]:

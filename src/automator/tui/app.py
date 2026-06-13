@@ -324,18 +324,17 @@ class BmadAutoApp(App[None]):
             if not ok:
                 return
             try:
-                launch.start_resolve_detached(self.project, run_id)
+                win_id = launch.start_resolve_detached(self.project, run_id)
             except launch.LaunchError as e:
                 self.notify(str(e), severity="error")
                 return
-            window = launch.ctl_window(run_id)
-            if window is None:
+            if not win_id:
                 self.notify(
-                    f"resolve launched but its {launch.CTL_SESSION} window was not found",
+                    "resolve launched but its window id was not captured",
                     severity="error",
                 )
                 return
-            launch.select_ctl_window(window)
+            launch.select_ctl_window_id(win_id)
             self._attach_to_target(f"={launch.CTL_SESSION}")
 
         self.push_screen(

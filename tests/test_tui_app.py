@@ -858,9 +858,13 @@ async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
     selected: list[str] = []
     monkeypatch.setattr(launch, "tmux_available", lambda: True)
     monkeypatch.setattr(data, "liveness", lambda run_dir: "dead")
-    monkeypatch.setattr(launch, "start_resolve_detached", lambda proj, rid: launched.append(rid))
-    monkeypatch.setattr(launch, "ctl_window", lambda rid: f"resolve-{rid}")
-    monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
+
+    def fake_start_resolve(proj, rid):
+        launched.append(rid)
+        return "@7"
+
+    monkeypatch.setattr(launch, "start_resolve_detached", fake_start_resolve)
+    monkeypatch.setattr(launch, "select_ctl_window_id", lambda w: selected.append(w))
     calls = _patch_attach_exec(monkeypatch)
     make_run(
         project.project,
@@ -877,7 +881,7 @@ async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
         await pilot.click("#ok")
         await until(pilot, lambda: bool(calls))
     assert launched == ["20260611-100000-aaaa"]
-    assert selected == ["resolve-20260611-100000-aaaa"]
+    assert selected == ["@7"]
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
 
 

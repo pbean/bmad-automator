@@ -24,7 +24,8 @@ class FakeRun:
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
         rc = self.has_session_rc if argv[1] == "has-session" else 0
-        return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
+        out = "@7\n" if argv[1] == "new-window" else ""
+        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="")
 
     def by_verb(self, verb: str) -> list[list[str]]:
         return [c for c in self.calls if c[1] == verb]
@@ -44,6 +45,9 @@ def expected_cli(*tail: str) -> str:
 
 def test_start_run_detached_argv(fake_run, tmp_path: Path):
     launch.start_run_detached(tmp_path, "RID", epic=2, story="1-2-x", max_stories=3)
+
+    nw0 = fake_run.by_verb("new-window")[0]
+    assert nw0[nw0.index("-F") + 1] == "#{window_id}"
 
     # control session was missing: has-session, then new-session, then new-window
     assert [c[1] for c in fake_run.calls] == [
@@ -183,6 +187,31 @@ def test_ctl_window_no_session_or_tmux(monkeypatch):
 def test_select_ctl_window_argv(fake_run):
     launch.select_ctl_window("sweep-RID")
     assert fake_run.calls == [["tmux", "select-window", "-t", "=bmad-auto-ctl:sweep-RID"]]
+
+
+def test_start_detached_returns_window_id(fake_run, tmp_path: Path):
+    assert launch.start_resolve_detached(tmp_path, "RID") == "@7"
+
+
+def test_select_ctl_window_id_argv(fake_run):
+    launch.select_ctl_window_id("@7")
+    assert fake_run.calls == [["tmux", "select-window", "-t", "@7"]]
+
+
+def test_in_ctl_session(monkeypatch):
+    monkeypatch.setattr(launch, "current_session", lambda: "bmad-auto-ctl")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+    assert launch.in_ctl_session() is True
+    monkeypatch.setattr(launch, "current_session", lambda: "some-other-session")
+    assert launch.in_ctl_session() is False
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(launch, "current_session", lambda: "bmad-auto-ctl")
+    assert launch.in_ctl_session() is False  # not inside tmux
+
+
+def test_detach_client_argv(fake_run):
+    launch.detach_client()
+    assert fake_run.calls == [["tmux", "detach-client"]]
 
 
 def test_run_captured_merges_streams(monkeypatch):
