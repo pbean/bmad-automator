@@ -18,7 +18,12 @@ tui = ["textual>=8.0,<9", "tomlkit>=0.13", "pyte>=0.8.2"]
 
 [dependency-groups]
 # dev gets tui via `uv sync --all-extras` (groups can't self-reference an extra).
-dev = ["pytest>=8.0", "ruff>=0.4", "pytest-asyncio>=1.0", "pytest-rerunfailures>=16.0"]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "pytest-asyncio>=1.0",
+  "pytest-rerunfailures>=16.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/automator"]
