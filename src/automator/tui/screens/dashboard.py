@@ -87,6 +87,7 @@ class _Snapshot:
     generation: int
     runs: list[data.RunInfo] | None = None  # None: no rescan this tick
     project_refreshed: bool = False  # sprint + deferred rescanned this tick
+    missed_decisions: int = 0  # decisions past sweeps left unanswered
     sprint: sprintstatus.SprintStatus | None = None
     deferred: list[data.DeferredItem] | None = None
     has_run: bool = False
@@ -329,6 +330,7 @@ class DashboardScreen(Screen[None]):
                 snap.project_refreshed = True
                 snap.sprint = data.sprint_overview(self.project)
                 snap.deferred = data.deferred_entries(self.project)
+                snap.missed_decisions = len(data.pending_missed_decisions(self.project))
             if ctx is not None:
                 snap.has_run = True
                 snap.run_id = ctx.run_dir.name
@@ -374,6 +376,7 @@ class DashboardScreen(Screen[None]):
         if snap.project_refreshed:
             self._apply_sprint_tree(snap.sprint)
             self._apply_deferred(snap.deferred)
+            self._apply_missed_decisions(snap.missed_decisions)
         if not snap.has_run or snap.generation != self._generation:
             return  # selection changed mid-poll: per-run parts are stale
 
@@ -535,3 +538,9 @@ class DashboardScreen(Screen[None]):
                 deferred.highlighted = deferred.get_option_index(highlighted_id)
             except OptionDoesNotExist:
                 pass
+
+    def _apply_missed_decisions(self, count: int) -> None:
+        deferred = self.query_one("#deferred", OptionList)
+        deferred.border_title = (
+            f"Deferred Work — {count} to answer (d)" if count else "Deferred Work"
+        )

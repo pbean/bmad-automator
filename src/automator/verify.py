@@ -347,3 +347,33 @@ def commit_story(repo: Path, message: str) -> str:
     if rc != 0:
         raise GitError(f"git commit failed: {out}")
     return rev_parse_head(repo)
+
+
+def commit_paths(repo: Path, message: str, paths: list[Path]) -> str | None:
+    """Commit exactly `paths` (and nothing else), leaving any unrelated working
+    or staged changes untouched. Unlike commit_story's `add -A`, this is safe to
+    call out of band (e.g. `bmad-auto decisions`) when the tree may hold the
+    user's own uncommitted work. Returns the new HEAD sha, or None when the
+    given paths had no changes to commit. Paths outside the repo are ignored."""
+    rels: list[str] = []
+    repo_root = repo.resolve()
+    for p in paths:
+        try:
+            rels.append(str(Path(p).resolve().relative_to(repo_root)))
+        except ValueError:
+            continue
+    if not rels:
+        return None
+    rc, out = _git(repo, "add", "--", *rels)
+    if rc != 0:
+        raise GitError(f"git add failed: {out}")
+    rc, out = _git(repo, "status", "--porcelain", "--", *rels)
+    if rc != 0:
+        raise GitError(f"git status failed: {out}")
+    if not out:
+        return None  # nothing changed in these paths
+    # pathspec form commits only `rels`, ignoring any other staged changes
+    rc, out = _git(repo, "commit", "-m", message, "--", *rels)
+    if rc != 0:
+        raise GitError(f"git commit failed: {out}")
+    return rev_parse_head(repo)

@@ -72,6 +72,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - `bmad-auto sweep` triages every open entry against the actual code (ledger statuses treated as unreliable) → partition: already-resolved (auto-closed with evidence) / bundles / blocked / skip / decisions.
 - Bundles run the full pipeline (dev `--dw-bundle` → review → verify → commit); the review gate checks every bundle entry is `status: done`.
 - Interactive decision walkthrough (build / close / keep-open per option, with a recommendation); answers written back as `decision:` lines. Unattended runs leave decisions open.
+- Answer skipped/missed decisions out of band with `bmad-auto decisions` (or `d` in the TUI): reconstructed from past triage output, saved to `.automator/decisions.json`, and consumed by the next sweep with no re-prompt (build → bundle, close → closed, keep-open → recorded).
 - Auto-sweep at epic boundaries or run-end (`[sweep] auto`); a failed/paused child sweep never interrupts the parent run.
 - Repeat mode (`--repeat` / `[sweep] repeat`): re-triages after each cycle to absorb newly generated deferred work, stopping when a cycle does nothing addressable or hits `max_cycles`.
 - Sweeps are their own resumable runs (`bmad-auto resume <id>`).
@@ -102,7 +103,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 ### TUI dashboard
 
 - Read-only observer + launcher (`bmad-auto tui`): runs table, expandable sprint tree (epics → stories/retro), severity-colored deferred-work ledger, per-story phase table (phase · dev attempts · review cycles · tokens · commit/defer), tabs tailing journal / pane log / `ATTENTION`.
-- Launch & manage from keys: start run/sweep (`r`/`s`), resume (`e`), resolve escalation (`R`), attach (`a`), cleanup (`c`), validate (`v`), settings editor (`g`), dark mode / quit (`d`/`q`).
+- Launch & manage from keys: start run/sweep (`r`/`s`), resume (`e`), resolve escalation (`R`), answer missed decisions (`d`), attach (`a`), cleanup (`c`), validate (`v`), settings editor (`g`), theme/mode toggle (`M`), quit (`q`).
 - Survives TUI exit/crash: runs launched from the TUI are detached `bmad-auto` processes in a dedicated `bmad-auto-ctl` tmux session; the dashboard watches purely via run-dir artifacts, so shell-started runs appear identically.
 - Comment-preserving policy editor (`g`): grouped form, validated with the engine's own parser, unset keys show defaults as placeholders.
 
@@ -126,6 +127,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - `bmad-auto sweep` — triage + execute open deferred-work entries.
 - `bmad-auto resume <run-id>` — continue a paused/interrupted run.
 - `bmad-auto resolve <run-id>` — resolve a CRITICAL escalation, then re-arm + resume.
+- `bmad-auto decisions` — answer deferred-work decisions past sweeps left unanswered (`--list` to just show them).
 - `bmad-auto status [<run-id>]` — run + sprint summary with per-story token totals.
 - `bmad-auto attach [<run-id>]` — tmux-attach to a run's live agent session.
 - `bmad-auto cleanup` — remove leftover tmux artifacts for finished/stopped runs.

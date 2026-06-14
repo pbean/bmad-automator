@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from textual.app import App, SuspendNotSupported
 from textual.binding import Binding
 from tomlkit.exceptions import ParseError
 
-from .. import runs, verify
+from .. import bmadconfig, decisions, runs, verify
 from ..journal import load_state
 from ..policy import POLICY_FILE
 from ..runs import RUNS_DIR
@@ -28,6 +29,7 @@ from .screens.dashboard import DashboardScreen
 from .screens.modals import (
     ConfirmModal,
     ConfirmResumeModal,
+    DecisionModal,
     StartRunModal,
     StartSweepModal,
     TextOutputModal,
@@ -96,6 +98,7 @@ class BmadAutoApp(App[None]):
         Binding("s", "start_sweep", "sweep"),
         Binding("e", "resume_run", "resume"),
         Binding("R", "resolve_run", "resolve"),
+        Binding("d", "answer_decisions", "decisions"),
         Binding("a", "attach", "attach"),
         Binding("x", "stop_run", "stop"),
         Binding("D", "delete_run", "delete"),
@@ -103,7 +106,7 @@ class BmadAutoApp(App[None]):
         Binding("c", "cleanup_sessions", "cleanup"),
         Binding("v", "validate", "validate"),
         Binding("g", "settings", "settings"),
-        Binding("d", "toggle_dark", "dark"),
+        Binding("M", "toggle_dark", "mode"),
     ]
 
     def __init__(self, project: Path):
@@ -222,6 +225,46 @@ class BmadAutoApp(App[None]):
             self._dashboard.expect_run(run_id)
 
         self._guarded(go)
+
+    def action_answer_decisions(self) -> None:
+        """Walk the deferred-work decisions past sweeps left unanswered, one
+        modal at a time. Each answer is recorded so the next sweep acts on it
+        (build -> bundle, close -> closed, keep-open -> recorded) without asking
+        again. No tmux/engine needed — this only edits the ledger and store."""
+        pending = data.pending_missed_decisions(self.project)
+        if not pending:
+            self.notify("no unanswered decisions from past sweeps")
+            return
+        self._walk_decisions(list(pending), 0, 0)
+
+    def _walk_decisions(self, pending: list, idx: int, answered: int) -> None:
+        if idx >= len(pending):
+            if answered:
+                self.notify(f"recorded {answered} decision(s) — run a sweep to act on any builds")
+                self._dashboard._tick(force_rescan=True)
+            return
+        decision = pending[idx]
+
+        def on_choice(option: object | None) -> None:
+            if option is None:  # skipped this one: stop, keep the rest pending
+                if answered:
+                    self.notify(f"recorded {answered} decision(s)")
+                    self._dashboard._tick(force_rescan=True)
+                return
+            ok = self._record_decision(decision, option)
+            self._walk_decisions(pending, idx + 1, answered + (1 if ok else 0))
+
+        self.push_screen(DecisionModal(decision), on_choice)
+
+    def _record_decision(self, decision: object, option: object) -> bool:
+        try:
+            decisions.apply_pre_answer(
+                self.project, decision, option, date=time.strftime("%Y-%m-%d")
+            )
+        except (OSError, bmadconfig.BmadConfigError) as e:
+            self.notify(f"failed to record {decision.id}: {e}", severity="error")
+            return False
+        return True
 
     def action_resume_run(self) -> None:
         if self._tmux_missing():

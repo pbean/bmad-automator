@@ -15,9 +15,9 @@ Plain Python drives the loop — **pick story → implement → adversarially re
 
 <sub>The live TUI dashboard — run picker, sprint tree, deferred-work ledger, per-story task table, and a tailing journal. <a href="#the-tui">Jump to the TUI tour ↓</a></sub>
 
-<img src="docs/images/demo.gif" alt="A walkthrough of the bmad-auto TUI: the live run dashboard, the sprint tree, a deferred-work entry, the start-run modal, a sweep blocked on a human decision, and the policy editor." width="880">
+<img src="docs/images/demo.gif" alt="A walkthrough of the bmad-auto TUI: the live run dashboard, the sprint tree, a deferred-work entry, answering a missed decision, the start-run modal, a sweep blocked on a human decision, and the policy editor." width="880">
 
-<sub>A tour of the dashboard — walking the runs table, unfolding the sprint tree, opening a deferred-work entry, typing a story into the start-run modal, a sweep blocked on a decision, and scrolling the policy editor. <a href="#the-tui">More on the TUI ↓</a></sub>
+<sub>A tour of the dashboard — walking the runs table, unfolding the sprint tree, opening a deferred-work entry, answering a decision a past sweep left unanswered, typing a story into the start-run modal, a sweep blocked on a decision, and scrolling the policy editor. <a href="#the-tui">More on the TUI ↓</a></sub>
 
 </div>
 
@@ -64,7 +64,8 @@ bmad-auto tui                    # …or drive everything from the dashboard
 | `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                                                 |
 | `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                                      |
 | `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                                          |
-| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals.                                                                                                                                                                                                  |
+| `bmad-auto decisions`         | Answer deferred-work decisions earlier sweeps left unanswered (skipped by `--no-prompt`, or an abandoned interactive sweep). Recorded so the next sweep acts on them without re-asking. `--list` shows them without answering.                     |
+| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals (plus a count of decisions awaiting an answer).                                                                                                                                                   |
 | `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                                         |
 | `bmad-auto cleanup`           | Remove leftover tmux artifacts: kill `bmad-auto-<id>` sessions for finished/stopped/interrupted runs (and orphans whose run dir is gone) and close parked `bmad-auto-ctl` windows. `--dry-run` lists without killing. Live runs are never touched. |
 | `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra).                                                                                                                                                                                               |
@@ -96,6 +97,14 @@ The left column stacks the **runs table** (newest auto-selected), an expandable 
 
 Sweeps run as their own `[sweep]`-tagged runs. When an attended sweep hits a "needs human decision" item it blocks on its own terminal prompt; the dashboard spots the `decision-pending` journal event and raises a banner + toast — press **`a`** to attach to the sweep's window, answer, and detach.
 
+### Answering decisions a past sweep left unanswered
+
+<div align="center">
+<img src="docs/images/decision-answer.png" alt="A modal answering deferred-work decision DW-1, with the question, context, and build/keep-open/close options (recommended marked)." width="880">
+</div>
+
+Unattended sweeps (`--no-prompt`) skip decisions, and an attended one can be abandoned mid-way — those answers would otherwise be lost. The Deferred Work pane shows the outstanding count (**`— N to answer (d)`**); press **`d`** (or run `bmad-auto decisions`) to walk each one. A `close` is applied immediately; a `build` / `keep-open` is saved to `.automator/decisions.json` and consumed by the next sweep with no re-prompt.
+
 ### Deferred-work entry & the start-run modal
 
 <div align="center">
@@ -120,11 +129,12 @@ Press **`g`** to edit `.automator/policy.toml` in a form grouped by section — 
 | `r` / `s` | start a run / sweep (modal for epic, story, max-stories, dry-run…) |
 | `e`       | resume the selected paused/interrupted run                         |
 | `R`       | resolve a run paused at an escalation (interactive, then re-arm)   |
+| `d`       | answer deferred-work decisions past sweeps left unanswered         |
 | `a`       | attach to the live agent session (or the orchestrator window)      |
 | `c`       | clean up tmux sessions/windows for finished & stopped runs         |
 | `v`       | run `bmad-auto validate`, output in a modal                        |
 | `g`       | settings editor for `.automator/policy.toml`                       |
-| `d` / `q` | toggle dark mode / quit                                            |
+| `M` / `q` | toggle theme (light/dark mode) / quit                              |
 
 **The TUI is an observer/launcher, never the engine.** Runs started with `r`/`s` are detached `bmad-auto` processes in windows of a dedicated tmux session (`bmad-auto-ctl`), so they survive a TUI exit or crash; the dashboard watches runs purely through the run-dir artifacts the engine writes atomically, so runs started from a plain shell show up identically. Launch and attach need tmux; the dashboard itself does not. Pid-based liveness is local-only — a run whose engine died shows `interrupted` (press `e`); runs on other hosts show `unknown`.
 
@@ -177,6 +187,8 @@ bmad-auto sweep [--no-prompt] [--decisions-only] [--max-bundles N] [--repeat] [-
               → bmad-auto-review → verify commands → commit. The review gate also
               checks every bundle entry is `status: done` in the ledger.
 ```
+
+**Answering missed decisions later.** An unattended sweep (`--no-prompt`) skips decisions, and an interactive one can be abandoned before you answer them all — those answers would otherwise be lost, since triage re-derives the decision set from the ledger every run. `bmad-auto decisions` (or press `d` in the TUI) surfaces every decision past sweeps left unanswered, reconstructed from their triage output, and lets you answer them out of band. A `close` is applied immediately; a `build`/`keep-open` is saved to `.automator/decisions.json` and consumed by the next sweep (build → bundle, keep-open → recorded) with no re-prompt. `--list` shows them without answering; `bmad-auto status` reports the outstanding count.
 
 Sweeps are their own resumable runs (`bmad-auto resume <id>`). `[sweep] auto` in the policy fires an unattended sweep automatically at epic boundaries or run end; a failed/paused child sweep never interrupts the parent run.
 

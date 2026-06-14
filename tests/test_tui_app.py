@@ -30,6 +30,7 @@ from automator.tui.screens.dashboard import DashboardScreen
 from automator.tui.screens.modals import (
     ConfirmModal,
     ConfirmResumeModal,
+    DecisionModal,
     DeferredEntryModal,
     StartRunModal,
     StartSweepModal,
@@ -534,6 +535,72 @@ async def test_deferred_pane_placeholder_without_ledger(project):
         await until(pilot, lambda: deferred.option_count == 1)
         assert "deferred ledger unavailable" in deferred_rows(deferred)[0]
         assert deferred.get_option_at_index(0).disabled
+
+
+def _write_triage_decision(run_dir: Path, dw_id: str = "DW-1") -> None:
+    import json
+
+    (run_dir / "triage.json").write_text(
+        json.dumps(
+            {
+                "workflow": "deferred-sweep-triage",
+                "open_ids": [dw_id],
+                "already_resolved": [],
+                "bundles": [],
+                "blocked": [],
+                "skip": [],
+                "decisions": [
+                    {
+                        "id": dw_id,
+                        "question": "Renegotiate the API signature?",
+                        "context": "ctx",
+                        "options": [
+                            {"key": "1", "label": "Widen", "effect": "build", "intent": "widen it"},
+                            {"key": "2", "label": "Keep", "effect": "keep-open"},
+                        ],
+                        "recommendation": "1",
+                    }
+                ],
+                "escalations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+async def test_missed_decision_count_and_answer_via_modal(project):
+    from automator import decisions
+
+    install_bmad_config(project)
+    project.deferred_work.write_text(
+        "# Deferred Work\n\n### DW-1: Renegotiate API\n\n"
+        "origin: test, 2026-06-01\nlocation: a.py:1\nreason: t.\nstatus: open\n",
+        encoding="utf-8",
+    )
+    _write_triage_decision(make_run(project.project, "20260101-000000-aaaa", run_type="sweep"))
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        deferred = dashboard(app).query_one("#deferred", OptionList)
+        await until(pilot, lambda: "1 to answer" in str(deferred.border_title))
+        await pilot.press("d")
+        await until(pilot, lambda: isinstance(app.screen, DecisionModal))
+        await pilot.click("#opt-1")  # choose build
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+    assert decisions.load_pre_answers(project.project)["DW-1"]["effect"] == "build"
+
+
+async def test_answer_decisions_none_notifies(project):
+    install_bmad_config(project)
+    project.deferred_work.write_text(
+        "# Deferred Work\n\n### DW-1: done thing\n\norigin: t\nstatus: done 2026-06-01\n",
+        encoding="utf-8",
+    )
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await pilot.press("d")
+        await until(pilot, lambda: any("no unanswered decisions" in m for m in notifications(app)))
 
 
 def test_cli_tui_hint_without_textual(project, monkeypatch, capsys):

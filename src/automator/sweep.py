@@ -461,6 +461,7 @@ class SweepEngine(Engine):
         bundles = self._materialize_bundles(plan, answers)
         if self.decisions_only:
             self.journal.append("sweep-decisions-only", bundles_not_run=len(bundles))
+            self._prune_pre_answers()
             return False
         for bundle in bundles:
             self._run_bundle(bundle, cycle)
@@ -469,7 +470,21 @@ class SweepEngine(Engine):
             for b in bundles
             if self.state.tasks[self._bundle_key(b.name, cycle)].phase == Phase.DONE
         )
+        self._prune_pre_answers()
         return closed > 0 or decisions_closed > 0 or bundles_done > 0
+
+    def _prune_pre_answers(self) -> None:
+        """Drop consumed pre-answers — entries built or closed this cycle have
+        left the open set. Keeps the store from re-applying a stale answer (and a
+        keep-open answer's audit line) on the next sweep."""
+        from . import decisions as decisions_store  # lazy: decisions imports sweep
+
+        ledger = self.paths.deferred_work
+        text = ledger.read_text(encoding="utf-8") if ledger.is_file() else ""
+        dropped = decisions_store.prune_pre_answers(self.paths.project, deferredwork.open_ids(text))
+        if dropped:
+            self.journal.append("decision-preanswers-pruned", dw_ids=dropped)
+            self._commit_ledger("chore(sweep): drop consumed deferred-work pre-answers")
 
     def _run_story(self, task: StoryTask) -> None:
         # no spec-approval gate for bundles: the bundle intent came from the
@@ -712,11 +727,33 @@ class SweepEngine(Engine):
         return len(closed)
 
     def _decisions_phase(self, plan: TriagePlan) -> tuple[dict[str, dict[str, str]], int]:
+        from . import decisions as decisions_store  # lazy: decisions imports sweep
+
         decisions_path = self.run_dir / "decisions.json"
         answers: dict[str, dict[str, str]] = (
             _read_json(decisions_path) if decisions_path.is_file() else {}
         )
         closed = 0
+        # Adopt out-of-band pre-answers (a human answered decisions an earlier
+        # unattended/abandoned sweep left). The ledger edits were already applied
+        # when they answered, so here we only take the answer onboard — this run
+        # won't re-prompt/re-skip and build answers materialize into bundles.
+        pre = decisions_store.load_pre_answers(self.paths.project)
+        seeded = False
+        for decision in plan.decisions:
+            if decision.id in answers or decision.id not in pre:
+                continue
+            answers[decision.id] = pre[decision.id]
+            self.journal.append(
+                "decision-preanswered",
+                dw_id=decision.id,
+                effect=pre[decision.id].get("effect"),
+            )
+            seeded = True
+        if seeded:
+            tmp = decisions_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(answers, indent=2), encoding="utf-8")
+            tmp.replace(decisions_path)
         pending = [d for d in plan.decisions if d.id not in answers]
         if not self.prompting:
             pending = [d for d in pending if d.id not in self._skipped_decisions]
@@ -793,17 +830,27 @@ class SweepEngine(Engine):
             answer = answers.get(decision.id)
             if not answer or answer.get("effect") != "build":
                 continue
+            # An in-run answer maps cleanly to a current option; a pre-answer
+            # (answered out of band against an earlier triage) may not — a fresh
+            # triage can renumber options — so fall back to the stored option
+            # semantics carried in the answer itself.
             option = decision.option(str(answer.get("key")))
-            if option is None or option.effect != "build":
+            intent = (option.intent if option else "") or str(answer.get("intent", ""))
+            if not intent:
                 continue
-            name = option.bundle_name or "decision-" + decision.id.lower()
+            label = (option.label if option else "") or str(answer.get("label", "")) or "build"
+            bundle_name = (option.bundle_name if option else "") or str(
+                answer.get("bundle_name", "")
+            )
+            key = (option.key if option else "") or str(answer.get("key", "")) or "?"
+            name = bundle_name or "decision-" + decision.id.lower()
             bundles.append(
                 Bundle(
                     name=name,
                     dw_ids=(decision.id,),
-                    intent=option.intent,
+                    intent=intent,
                     decision_note=(
-                        f"The human chose option {option.key} ({option.label}) for the "
+                        f"The human chose option {key} ({label}) for the "
                         f"question: {decision.question}"
                     ),
                 )

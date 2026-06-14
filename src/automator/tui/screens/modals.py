@@ -8,6 +8,8 @@ rich Text, never markup.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -217,6 +219,67 @@ class DeferredEntryModal(BaseDialog):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
+
+
+class DecisionModal(BaseDialog):
+    """Answer one deferred-work decision a past sweep left unanswered. Dismisses
+    with the chosen sweep.DecisionOption, or None on skip/cancel. Question,
+    option labels and details are LLM-written, so they render as plain Text."""
+
+    DEFAULT_CSS = """
+    DecisionModal #dialog {
+        width: 86;
+        height: auto;
+        max-height: 90%;
+    }
+    DecisionModal #context {
+        height: auto;
+        max-height: 40%;
+        margin-bottom: 1;
+    }
+    DecisionModal .opt {
+        margin-top: 1;
+    }
+    DecisionModal .opt-detail {
+        margin-bottom: 1;
+    }
+    """
+
+    def __init__(self, decision: Any):
+        super().__init__()
+        self._decision = decision
+
+    def compose(self) -> ComposeResult:
+        d = self._decision
+        title = Text()
+        title.append(f"{d.id} — answer this decision", style="bold")
+        with Vertical(id="dialog"):
+            yield Static(title, classes="title")
+            yield Static(Text(d.question))
+            if d.context:
+                with VerticalScroll(id="context"):
+                    yield Static(Text(d.context, style="dim"))
+            for opt in d.options:
+                head = Text()
+                head.append(f"[{opt.key}] ", style="bold")
+                head.append(opt.label)
+                head.append(f"  · {opt.effect}", style="cyan")
+                if opt.key == d.recommendation:
+                    head.append("  (recommended)", style="green")
+                yield Static(head, classes="opt")
+                detail = opt.intent or opt.resolution
+                if detail:
+                    yield Static(Text(f"    {detail}", style="dim"), classes="opt-detail")
+                yield Button(f"choose {opt.key}", id=f"opt-{opt.key}")
+            with Horizontal(classes="buttons"):
+                yield Button("skip", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid.startswith("opt-"):
+            self.dismiss(self._decision.option(bid[len("opt-") :]))
+        else:
+            self.dismiss(None)
 
 
 class TextOutputModal(BaseDialog):

@@ -211,6 +211,25 @@ def test_commit_story(project):
     assert verify.worktree_clean(project.project)
 
 
+def test_commit_paths_commits_only_listed(project):
+    base = verify.rev_parse_head(project.project)
+    (project.project / "src.txt").write_text("ledger-ish edit\n")  # the "tracked" target
+    (project.project / "other.txt").write_text("unrelated work\n")  # must be left alone
+
+    sha = verify.commit_paths(project.project, "chore: targeted", [project.project / "src.txt"])
+    assert sha is not None and sha != base
+    # only src.txt landed in the commit; other.txt is still uncommitted
+    status = git(project.project, "status", "--porcelain")
+    assert "other.txt" in status
+    assert "src.txt" not in status
+
+
+def test_commit_paths_noop_when_unchanged(project):
+    assert verify.commit_paths(project.project, "noop", [project.project / "src.txt"]) is None
+    # a path outside the repo is ignored, not an error
+    assert verify.commit_paths(project.project, "noop", [project.project.parent / "x"]) is None
+
+
 def test_read_frontmatter_tolerates_garbage(project):
     p = project.project / "x.md"
     p.write_text("no frontmatter here")

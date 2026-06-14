@@ -194,6 +194,7 @@ Journal kinds are styled by substring, first match wins:
 | `s` | start a sweep (modal)                                                      |
 | `e` | resume the selected paused/interrupted run (confirm modal)                 |
 | `R` | resolve a run paused at an escalation (interactive, then re-arm)           |
+| `d` | answer deferred-work decisions past sweeps left unanswered (modal walk)    |
 | `a` | attach to the selected run's live session or orchestrator window           |
 | `x` | stop the selected live run (confirm modal)                                 |
 | `D` | delete the selected run's directory (confirm modal)                        |
@@ -201,7 +202,7 @@ Journal kinds are styled by substring, first match wins:
 | `c` | clean up tmux sessions/windows for finished & stopped runs (confirm modal) |
 | `v` | run `bmad-auto validate`, output in a modal                                |
 | `g` | settings editor for `.automator/policy.toml`                               |
-| `d` | toggle dark/light theme                                                    |
+| `M` | toggle theme (light/dark mode)                                             |
 | `q` | quit (running engines are unaffected)                                      |
 
 In the settings editor: `ctrl+s` saves, `escape` goes back without saving.
@@ -318,6 +319,19 @@ The banner clears on the next poll after the sweep journals anything further
 (the answer is recorded as a `decision:` line in `deferred-work.md`). Sweeps
 launched with **unattended** never prompt, so this flow only applies to
 attended sweeps.
+
+### Answering missed decisions (`d`)
+
+The flow above is for a decision a _live_ attended sweep is blocked on. For
+decisions an **unattended** sweep skipped — or an attended one you walked away
+from — press `d`. The Deferred Work pane title shows the outstanding count
+(`Deferred Work — N to answer (d)`), and `d` walks them one modal at a time
+(question, context, and each option with its effect and the triage
+recommendation). Each answer is durable: a `close` is applied immediately, and
+a `build`/`keep-open` is saved to `.automator/decisions.json`, so the next sweep
+acts on it (build → bundle, keep-open → recorded) without asking again. Skip a
+modal to leave that one for later. The same set is available on the CLI via
+`bmad-auto decisions` (`--list` to just view).
 
 ## Validate (`v`)
 

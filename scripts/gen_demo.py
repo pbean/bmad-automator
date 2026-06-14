@@ -41,7 +41,11 @@ from textual.widgets import Checkbox, Input  # noqa: E402
 from automator.tui import launch  # noqa: E402
 from automator.tui.app import BmadAutoApp  # noqa: E402
 from automator.tui.screens.dashboard import DashboardScreen  # noqa: E402
-from automator.tui.screens.modals import DeferredEntryModal, StartRunModal  # noqa: E402
+from automator.tui.screens.modals import (  # noqa: E402
+    DecisionModal,
+    DeferredEntryModal,
+    StartRunModal,
+)
 from automator.tui.screens.settings_screen import SettingsScreen  # noqa: E402
 
 OUT_DIR = REPO / "docs" / "images"
@@ -142,6 +146,16 @@ async def capture(root: Path, frames_dir: Path) -> list[tuple[str, float]]:
         await pilot.pause(0.15)
         shot()
         await hold_last(2.6, pilot)
+        await pilot.press("escape")
+        await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
+
+        # Beat 4b — answer a decision a past sweep left unanswered ("d"). The
+        # Deferred Work pane shows the count; the modal walks each open one.
+        await pilot.press("d")
+        await _wait(pilot, lambda: isinstance(app.screen, DecisionModal))
+        await pilot.pause(0.15)
+        shot()
+        await hold_last(2.8, pilot)
         await pilot.press("escape")
         await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
 

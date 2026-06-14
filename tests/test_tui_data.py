@@ -36,6 +36,55 @@ def dead_pid() -> int:
     return proc.pid
 
 
+def _write_triage_decision(run_dir: Path, dw_id: str = "DW-1") -> None:
+    import json
+
+    (run_dir / "triage.json").write_text(
+        json.dumps(
+            {
+                "workflow": "deferred-sweep-triage",
+                "open_ids": [dw_id],
+                "already_resolved": [],
+                "bundles": [],
+                "blocked": [],
+                "skip": [],
+                "decisions": [
+                    {
+                        "id": dw_id,
+                        "question": "q",
+                        "context": "",
+                        "options": [
+                            {"key": "1", "label": "Build", "effect": "build", "intent": "x"},
+                            {"key": "2", "label": "Keep", "effect": "keep-open"},
+                        ],
+                        "recommendation": "1",
+                    }
+                ],
+                "escalations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_pending_missed_decisions_reads_and_caches(project, monkeypatch):
+    from conftest import write_ledger
+
+    install_bmad_config(project)
+    write_ledger(project, {"DW-1": "open"})
+    run_dir = make_run(project.project, "20260101-000000-aaaa")
+    _write_triage_decision(run_dir)
+
+    pending = data.pending_missed_decisions(project.project)
+    assert [d.id for d in pending] == ["DW-1"]
+    # cached: same object back while ledger/store/run-set are unchanged
+    assert data.pending_missed_decisions(project.project) is pending
+
+
+def test_pending_missed_decisions_empty_for_uninitialized(tmp_path):
+    assert data.pending_missed_decisions(tmp_path) == []
+
+
 # ------------------------------------------------------------ no textual dep
 
 

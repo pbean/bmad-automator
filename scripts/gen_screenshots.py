@@ -21,6 +21,7 @@ is idempotent — re-run it whenever the TUI changes so the docs stay honest.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -37,7 +38,7 @@ from automator.runs import RUNS_DIR
 from automator.tui import launch
 from automator.tui.app import BmadAutoApp
 from automator.tui.screens.dashboard import DashboardScreen
-from automator.tui.screens.modals import DeferredEntryModal, StartRunModal
+from automator.tui.screens.modals import DecisionModal, DeferredEntryModal, StartRunModal
 from automator.tui.screens.settings_screen import SettingsScreen
 
 REPO = Path(__file__).resolve().parent.parent
@@ -278,9 +279,76 @@ def _build_sweep_run(root: Path) -> None:
         ),
     )
     (run_dir / "engine.pid").write_text(str(os.getpid()), encoding="utf-8")
+    # The triage output this sweep produced. `bmad-auto decisions` / the TUI's
+    # `d` key reconstruct unanswered decisions from these triage*.json files, so
+    # writing it makes the missed-decisions feature show: DW-1 and DW-3 are still
+    # open and unanswered, so the Deferred Work pane reads "2 to answer (d)".
+    triage = {
+        "workflow": "deferred-sweep-triage",
+        "open_ids": ["DW-1", "DW-2", "DW-3", "DW-4"],
+        "already_resolved": [],
+        "bundles": [
+            {
+                "name": "search-pagination",
+                "dw_ids": ["DW-2"],
+                "intent": "Page the search results API instead of truncating past ~500 items.",
+            }
+        ],
+        "blocked": [],
+        "skip": [
+            {"id": "DW-4", "reason": "quarantined in CI; tracked under the flaky-tests ticket."}
+        ],
+        "decisions": [
+            {
+                "id": "DW-1",
+                "question": "Harden the OAuth refresh race now, or hold it for the auth-hardening epic?",
+                "context": (
+                    "Two concurrent requests can both refresh the token. A single-flight lock "
+                    "fixes it now, but the upcoming auth-hardening epic reworks this module anyway."
+                ),
+                "options": [
+                    {
+                        "key": "1",
+                        "label": "Add a single-flight lock now",
+                        "effect": "build",
+                        "intent": "Guard the refresh path with a single-flight lock so only one refresh runs.",
+                    },
+                    {
+                        "key": "2",
+                        "label": "Hold for the auth-hardening epic",
+                        "effect": "keep-open",
+                    },
+                    {
+                        "key": "3",
+                        "label": "Won't fix — refresh is idempotent",
+                        "effect": "close",
+                        "resolution": "A double refresh is harmless; the second result is discarded.",
+                    },
+                ],
+                "recommendation": "1",
+            },
+            {
+                "id": "DW-3",
+                "question": "Move the ranking weights to a config table, or keep them inline?",
+                "context": "Product wants to tune relevance weights without shipping a deploy.",
+                "options": [
+                    {
+                        "key": "1",
+                        "label": "Add a weights config table",
+                        "effect": "build",
+                        "intent": "Load ranking weights from a config table editable without a deploy.",
+                    },
+                    {"key": "2", "label": "Keep them inline for now", "effect": "keep-open"},
+                ],
+                "recommendation": "1",
+            },
+        ],
+        "escalations": [],
+    }
+    (run_dir / "triage.json").write_text(json.dumps(triage, indent=2), encoding="utf-8")
     journal = Journal(run_dir)
     journal.append("sweep-start", cycle=1)
-    journal.append("triage-done", bundles=1, already_resolved=1, decisions=1)
+    journal.append("triage-done", bundles=1, already_resolved=1, decisions=2)
     journal.append("bundle-done", bundle="search-pagination", dw_ids="DW-2")
     journal.append(
         "decision-pending",
@@ -436,6 +504,16 @@ async def capture(root: Path) -> list[str]:
         await pilot.pause(0.2)
         app.save_screenshot(str(OUT_DIR / "deferred-modal.svg"))
         saved.append("deferred-modal.svg")
+        await pilot.press("escape")
+        await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
+
+        # Answering a decision a past sweep left unanswered ("d"): the modal
+        # walks the open, unanswered decisions reconstructed from triage output.
+        await pilot.press("d")
+        await _wait(pilot, lambda: isinstance(app.screen, DecisionModal))
+        await pilot.pause(0.2)
+        app.save_screenshot(str(OUT_DIR / "decision-answer.svg"))
+        saved.append("decision-answer.svg")
         await pilot.press("escape")
         await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
 

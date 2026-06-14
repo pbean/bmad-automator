@@ -68,6 +68,105 @@ def test_dry_run_renders_per_stage_commands(project, capsys):
     assert "--model gpt-5-codex" in review_line
 
 
+def _make_run_with_decision(project, run_id="20260101-000000-aaaa", dw_id="DW-1"):
+    run_dir = project.project / ".automator" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "project": str(project.project),
+                "started_at": "now",
+                "run_type": "sweep",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "triage.json").write_text(
+        json.dumps(
+            {
+                "workflow": "deferred-sweep-triage",
+                "open_ids": [dw_id],
+                "already_resolved": [],
+                "bundles": [],
+                "blocked": [],
+                "skip": [],
+                "decisions": [
+                    {
+                        "id": dw_id,
+                        "question": "build the widening?",
+                        "context": "ctx",
+                        "options": [
+                            {"key": "1", "label": "Widen", "effect": "build", "intent": "widen it"},
+                            {"key": "2", "label": "Keep", "effect": "keep-open"},
+                        ],
+                        "recommendation": "1",
+                    }
+                ],
+                "escalations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_decisions_none_pending(project, capsys):
+    from conftest import write_ledger
+
+    install_bmad_config(project)
+    write_ledger(project, {"DW-1": "done 2026-06-01"})
+    assert cli.main(["decisions", "--project", str(project.project)]) == 0
+    assert "no unanswered decisions" in capsys.readouterr().out
+
+
+def test_decisions_list(project, capsys):
+    from conftest import write_ledger
+
+    install_bmad_config(project)
+    write_ledger(project, {"DW-1": "open"})
+    _make_run_with_decision(project)
+    assert cli.main(["decisions", "--project", str(project.project), "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "1 unanswered decision" in out
+    assert "DW-1: build the widening?" in out
+    assert "[1] Widen — build  (recommended)" in out
+
+
+def test_decisions_answer_records_and_carries_forward(project, capsys, monkeypatch):
+    from conftest import write_ledger
+
+    from automator import decisions
+
+    install_bmad_config(project)
+    write_ledger(project, {"DW-1": "open"})
+    _make_run_with_decision(project)
+
+    class _StubPrompter:
+        def ask(self, decision):
+            return decision.option("1")  # choose build
+
+    monkeypatch.setattr("automator.sweep.DecisionPrompter", lambda *a, **k: _StubPrompter())
+    assert cli.main(["decisions", "--project", str(project.project)]) == 0
+    out = capsys.readouterr().out
+    assert "DW-1: queued" in out
+    stored = decisions.load_pre_answers(project.project)
+    assert stored["DW-1"]["effect"] == "build"
+    # and it no longer shows as pending
+    assert decisions.pending_missed_decisions(project.project) == []
+
+
+def test_status_surfaces_missed_decision_count(project, capsys):
+    from conftest import write_ledger, write_sprint
+
+    install_bmad_config(project)
+    write_sprint(project, {})
+    write_ledger(project, {"DW-1": "open"})
+    _make_run_with_decision(project, run_id="20260102-000000-bbbb")
+    # status needs a run to report; the decision run dir doubles as one
+    assert cli.main(["status", "--project", str(project.project)]) == 0
+    assert "decisions awaiting an answer: 1" in capsys.readouterr().out
+
+
 def test_sweep_dry_run_lists_open_entries(project, capsys):
     from conftest import write_ledger
 

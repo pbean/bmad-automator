@@ -13,6 +13,7 @@ from pathlib import Path
 from . import (
     __version__,
     bmadconfig,
+    decisions,
     deferredwork,
 )
 from . import policy as policy_mod
@@ -520,6 +521,48 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     return _resume_paused_run(project, run_dir)
 
 
+def cmd_decisions(args: argparse.Namespace) -> int:
+    """Answer deferred-work decisions earlier sweeps left unanswered (skipped by
+    an unattended sweep, or an interactive one that was abandoned). Answers are
+    recorded so the next sweep acts on them without re-asking."""
+    from .sweep import DecisionPrompter
+
+    project = _project(args)
+    try:
+        pending = decisions.pending_missed_decisions(project)
+    except bmadconfig.BmadConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if not pending:
+        print("no unanswered decisions from past sweeps")
+        return 0
+    if args.list:
+        print(f"{len(pending)} unanswered decision(s) from past sweeps:\n")
+        for d in pending:
+            print(f"  {d.id}: {d.question}")
+            for opt in d.options:
+                rec = "  (recommended)" if opt.key == d.recommendation else ""
+                print(f"      [{opt.key}] {opt.label} — {opt.effect}{rec}")
+            print("")
+        print("answer them interactively: bmad-auto decisions")
+        return 0
+    prompter = DecisionPrompter()
+    print(f"{len(pending)} unanswered decision(s) — your answers carry into the next sweep:")
+    today = time.strftime("%Y-%m-%d")
+    for decision in pending:
+        option = prompter.ask(decision)
+        decisions.apply_pre_answer(project, decision, option, date=today)
+        if option.effect == "close":
+            outcome = "closed now"
+        elif option.effect == "build":
+            outcome = "queued — the next sweep will build it"
+        else:
+            outcome = "kept open (recorded)"
+        print(f"  {decision.id}: {outcome}")
+    print("\nrun `bmad-auto sweep` to act on any builds.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     project = _project(args)
     if args.run_id:
@@ -551,6 +594,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         remaining = [s.key for s in ss.stories if s.status in sprintstatus.ACTIONABLE_STATUSES]
         print(f"sprint backlog remaining: {len(remaining)}")
     except (bmadconfig.BmadConfigError, sprintstatus.SprintStatusError):
+        pass
+    try:
+        missed = decisions.pending_missed_decisions(project)
+        if missed:
+            print(
+                f"deferred-work decisions awaiting an answer: {len(missed)} (bmad-auto decisions)"
+            )
+    except bmadconfig.BmadConfigError:
         pass
     return 0
 
@@ -758,6 +809,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="--resume: re-arm + resume without prompting; --no-resume: re-arm only "
         "(default: prompt to confirm, then resume)",
+    )
+
+    decisions_p = add(
+        "decisions",
+        cmd_decisions,
+        "answer deferred-work decisions earlier sweeps left unanswered",
+    )
+    decisions_p.add_argument(
+        "--list",
+        action="store_true",
+        help="list the pending decisions without answering them",
     )
 
     status_p = add("status", cmd_status, "show run + sprint state")

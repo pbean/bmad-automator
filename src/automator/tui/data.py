@@ -534,6 +534,9 @@ _paths_cache: dict[Path, tuple[_StatSig, bmadconfig.ProjectPaths]] = {}
 _sprint_cache: dict[Path, tuple[_StatSig | None, sprintstatus.SprintStatus | None]] = {}
 # deferred-work.md path -> (sig or None for missing, items or None)
 _deferred_cache: dict[Path, tuple[_StatSig | None, list[DeferredItem] | None]] = {}
+# project root -> (signature, pending decisions) — invalidated when the ledger,
+# pre-answer store, or the set of run dirs changes
+_missed_cache: dict[Path, tuple[Any, list]] = {}
 
 
 def _project_paths(project: Path) -> bmadconfig.ProjectPaths | None:
@@ -642,3 +645,30 @@ def deferred_entries(project: Path) -> list[DeferredItem] | None:
             items = [item for _, item in merged]
     _deferred_cache[ledger_path] = (sig, items)
     return items
+
+
+def pending_missed_decisions(project: Path) -> list:
+    """Deferred-work decisions earlier sweeps surfaced but no one answered (a
+    list of sweep.Decision). Cached on a signature of the ledger, the pre-answer
+    store, and the set of run dirs — a new sweep (new run dir) or an answer
+    (store/ledger change) invalidates it. Empty when the project is unavailable."""
+    from .. import decisions  # lazy: pulls sweep; keep this module import-light
+
+    paths = _project_paths(project)
+    if paths is None:
+        return []
+    project = project.resolve()
+    sig = (
+        _stat_sig(paths.deferred_work),
+        _stat_sig(decisions.store_path(project)),
+        tuple(d.name for d in list_run_dirs(project)),
+    )
+    cached = _missed_cache.get(project)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    try:
+        result = decisions.pending_missed_decisions(project)
+    except (bmadconfig.BmadConfigError, OSError):
+        result = []
+    _missed_cache[project] = (sig, result)
+    return result

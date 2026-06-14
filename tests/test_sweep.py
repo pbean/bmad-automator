@@ -514,6 +514,103 @@ def test_decisions_only_runs_no_bundles(project):
     assert entries["DW-2"].open  # bundle not run
 
 
+def _decision(dw_id, options, recommendation="1", question="q"):
+    return {
+        "id": dw_id,
+        "question": question,
+        "context": "",
+        "options": options,
+        "recommendation": recommendation,
+    }
+
+
+def test_preanswered_build_materializes_bundle_unattended(project):
+    """A build pre-answered out of band is consumed by a later unattended sweep
+    even though triage re-surfaced it as a decision — and the stored intent is
+    used when the triage option keys no longer match (option renumbered)."""
+    from automator import decisions
+    from automator.sweep import DecisionOption
+
+    write_ledger(project, {"DW-1": "open"})
+    # answered out of band against an earlier triage: stored key "9" is NOT one
+    # of this triage's option keys, so the sweep must fall back to stored intent
+    decisions.record_pre_answer(
+        project.project,
+        "DW-1",
+        DecisionOption(key="9", label="Widen", effect="build", intent="widen the field"),
+        date="2026-06-12",
+    )
+    plan = triage_result(
+        ["DW-1"],
+        decisions=[
+            _decision(
+                "DW-1",
+                [
+                    {"key": "1", "label": "Widen", "effect": "build", "intent": "fresh intent"},
+                    {"key": "2", "label": "Keep", "effect": "keep-open"},
+                ],
+            )
+        ],
+    )
+    engine, _ = make_sweep(
+        project,
+        [
+            triage_effect(plan),
+            bundle_dev_effect(project, "decision-dw-1", ["DW-1"]),
+            bundle_review_effect(project, "decision-dw-1"),
+        ],
+        prompting=False,  # unattended: without the pre-answer this would be skipped
+    )
+    summary = engine.run()
+    assert not summary.paused
+
+    journal = journal_text(engine)
+    assert '"decision-preanswered"' in journal
+    assert "decision-skipped-unattended" not in journal
+    assert engine.state.tasks["dw-decision-dw-1"].phase == Phase.DONE
+    assert ledger_entries(project)["DW-1"].status.startswith("done")
+    # consumed: the entry left the open set, so its pre-answer is pruned
+    assert decisions.load_pre_answers(project.project) == {}
+    assert '"decision-preanswers-pruned"' in journal
+
+
+def test_preanswered_keep_open_suppresses_prompt_and_persists(project):
+    """A keep-open pre-answer is adopted (no skip, no re-prompt) and, since the
+    entry stays open, the store keeps it for the next sweep too."""
+    from automator import decisions
+    from automator.sweep import DecisionOption
+
+    write_ledger(project, {"DW-1": "open"})
+    decisions.record_pre_answer(
+        project.project,
+        "DW-1",
+        DecisionOption(key="2", label="Keep", effect="keep-open"),
+        date="2026-06-12",
+    )
+    plan = triage_result(
+        ["DW-1"],
+        decisions=[
+            _decision(
+                "DW-1",
+                [
+                    {"key": "1", "label": "Build", "effect": "build", "intent": "x"},
+                    {"key": "2", "label": "Keep", "effect": "keep-open"},
+                ],
+                recommendation="2",
+            )
+        ],
+    )
+    engine, adapter = make_sweep(project, [triage_effect(plan)], prompting=False)
+    summary = engine.run()
+    assert not summary.paused
+    assert len(adapter.sessions) == 1  # triage only — no bundle, no prompt
+    journal = journal_text(engine)
+    assert '"decision-preanswered"' in journal
+    assert "decision-skipped-unattended" not in journal
+    assert ledger_entries(project)["DW-1"].open
+    assert decisions.load_pre_answers(project.project)["DW-1"]["effect"] == "keep-open"
+
+
 def test_review_ledger_gate_routes_fix_session(project):
     """Clean review but ledger ids unmarked -> fixable verify failure -> fix
     session marks them -> re-review -> commit."""
