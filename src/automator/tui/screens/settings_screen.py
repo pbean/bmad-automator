@@ -41,6 +41,7 @@ from ...policy import (
     POLICY_FILE,
     RETRO_MODES,
     SWEEP_AUTO_MODES,
+    AdapterPolicy,
     GatesPolicy,
     LimitsPolicy,
     NotifyPolicy,
@@ -138,6 +139,12 @@ _FIELDS: tuple[_Field, ...] = (
     _Field("adapter", "name", "str", placeholder="CLI profile — default: claude"),
     _Field("adapter", "model", "str", placeholder="CLI default model"),
     _Field("adapter", "extra_args", "args"),
+    _Field(
+        "adapter",
+        "cleanup_session_on_finish",
+        "switch",
+        default=AdapterPolicy.cleanup_session_on_finish,
+    ),
     *(spec for stage in STAGES for spec in _stage_fields(stage)),
     _Field(
         "sweep",

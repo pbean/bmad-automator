@@ -52,17 +52,18 @@ bmad-auto tui                    # …or drive everything from the dashboard
 
 ## Command reference
 
-| Command                       | What it does                                                                                                                                                                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bmad-auto init`              | Install the bundled `bmad-auto-*` skills, the hook relay, `.automator/policy.toml`, and a runs-dir gitignore. `--cli <profile>` (repeatable) targets specific agents; `--no-skills` / `--force-skills` control skill copying. |
-| `bmad-auto validate`          | Preflight every prerequisite: BMAD config, sprint-status, git, tmux, CLI binary, hook registration.                                                                                                                           |
-| `bmad-auto run`               | Drive the dev → review → verify → commit loop. `--epic N`, `--story KEY`, `--max-stories N`, `--dry-run`.                                                                                                                     |
-| `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                            |
-| `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                 |
-| `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                     |
-| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals.                                                                                                                                                                             |
-| `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                    |
-| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra).                                                                                                                                                                          |
+| Command                       | What it does                                                                                                                                                                                                                                       |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bmad-auto init`              | Install the bundled `bmad-auto-*` skills, the hook relay, `.automator/policy.toml`, and a runs-dir gitignore. `--cli <profile>` (repeatable) targets specific agents; `--no-skills` / `--force-skills` control skill copying.                      |
+| `bmad-auto validate`          | Preflight every prerequisite: BMAD config, sprint-status, git, tmux, CLI binary, hook registration.                                                                                                                                                |
+| `bmad-auto run`               | Drive the dev → review → verify → commit loop. `--epic N`, `--story KEY`, `--max-stories N`, `--dry-run`.                                                                                                                                          |
+| `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                                                 |
+| `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                                      |
+| `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                                          |
+| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals.                                                                                                                                                                                                  |
+| `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                                         |
+| `bmad-auto cleanup`           | Remove leftover tmux artifacts: kill `bmad-auto-<id>` sessions for finished/stopped/interrupted runs (and orphans whose run dir is gone) and close parked `bmad-auto-ctl` windows. `--dry-run` lists without killing. Live runs are never touched. |
+| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra).                                                                                                                                                                                               |
 
 Every command takes `--project <dir>` (default: the current directory).
 
@@ -116,6 +117,7 @@ Press **`g`** to edit `.automator/policy.toml` in a form grouped by section — 
 | `e`       | resume the selected paused/interrupted run                         |
 | `R`       | resolve a run paused at an escalation (interactive, then re-arm)   |
 | `a`       | attach to the live agent session (or the orchestrator window)      |
+| `c`       | clean up tmux sessions/windows for finished & stopped runs         |
 | `v`       | run `bmad-auto validate`, output in a modal                        |
 | `g`       | settings editor for `.automator/policy.toml`                       |
 | `d` / `q` | toggle dark mode / quit                                            |
@@ -236,6 +238,7 @@ file = true                # append the same alerts to the run's ATTENTION file
 [adapter]
 name = "claude"            # CLI profile: claude | codex | gemini | custom
 model = ""                 # empty = CLI default
+cleanup_session_on_finish = true  # kill the run's tmux session when it finishes (false keeps it for inspection)
 # extra_args replaces the profile's default bypass flags when set:
 # extra_args = ["--permission-mode", "bypassPermissions"]
 
@@ -269,6 +272,8 @@ max_cycles = 5             # safety cap on cycles per sweep run when repeat = tr
 Everything about a run lives in `.automator/runs/<run-id>/` (gitignored): `state.json` (resumable engine state), `journal.jsonl` (every decision), `events/` (hook signals), `tasks/<id>/` (per-session prompt + result + escalations), `logs/` (raw pane output, debugging only), `deferred/` (stashed specs from deferred stories), `resolve/<story>/` (escalation `context.json` + the resolve agent's `resolution.json`), `ATTENTION` (human-readable alerts).
 
 Token usage is read from each CLI's local session transcript (selected by the profile's `usage_parser`) and aggregated per story (`bmad-auto status`).
+
+Each run drives its agents inside a dedicated tmux session, `bmad-auto-<run-id>`. It is torn down automatically when the run finishes (disable with `[adapter] cleanup_session_on_finish = false` to inspect agent windows afterwards), and `stop` always kills it. A paused or interrupted run keeps its session for `resume`, which clears any stale session and spins up a fresh one. Sessions left behind by older runs — or by a `cleanup_session_on_finish = false` policy — can be swept any time with `bmad-auto cleanup` (or `c` in the TUI).
 
 ## Other coding CLIs
 

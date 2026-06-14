@@ -27,7 +27,11 @@ The TUI never runs an engine in-process. The two halves:
   interpreter as the TUI (`python -m automator.cli`, immune to PATH/venv drift
   inside tmux), and stay open after exit showing
   `[bmad-auto exited <code> — press enter]` so you can inspect failures.
-  Quitting or crashing the TUI does not touch them.
+  Quitting or crashing the TUI does not touch them. The engine each run drives
+  lives in a separate `bmad-auto-<run-id>` session; it is torn down when the run
+  finishes (unless `[adapter] cleanup_session_on_finish = false`). These parked
+  `bmad-auto-ctl` windows and any leftover `bmad-auto-<id>` sessions can be
+  swept with `c` (see [Cleaning up sessions](#cleaning-up-sessions-c)).
 - **Observer** — the dashboard reads only the artifacts the engine writes
   atomically into `.automator/runs/<run-id>/`: `state.json`, `journal.jsonl`,
   `logs/<task-id>.log`, `ATTENTION`, `engine.pid`. It polls the selected run
@@ -184,17 +188,21 @@ Journal kinds are styled by substring, first match wins:
 
 ## Key bindings
 
-| Key | Action                                                           |
-| --- | ---------------------------------------------------------------- |
-| `r` | start a run (modal)                                              |
-| `s` | start a sweep (modal)                                            |
-| `e` | resume the selected paused/interrupted run (confirm modal)       |
-| `R` | resolve a run paused at an escalation (interactive, then re-arm) |
-| `a` | attach to the selected run's live session or orchestrator window |
-| `v` | run `bmad-auto validate`, output in a modal                      |
-| `g` | settings editor for `.automator/policy.toml`                     |
-| `d` | toggle dark/light theme                                          |
-| `q` | quit (running engines are unaffected)                            |
+| Key | Action                                                                     |
+| --- | -------------------------------------------------------------------------- |
+| `r` | start a run (modal)                                                        |
+| `s` | start a sweep (modal)                                                      |
+| `e` | resume the selected paused/interrupted run (confirm modal)                 |
+| `R` | resolve a run paused at an escalation (interactive, then re-arm)           |
+| `a` | attach to the selected run's live session or orchestrator window           |
+| `x` | stop the selected live run (confirm modal)                                 |
+| `D` | delete the selected run's directory (confirm modal)                        |
+| `A` | archive the selected run to `.automator/archive` (confirm modal)           |
+| `c` | clean up tmux sessions/windows for finished & stopped runs (confirm modal) |
+| `v` | run `bmad-auto validate`, output in a modal                                |
+| `g` | settings editor for `.automator/policy.toml`                               |
+| `d` | toggle dark/light theme                                                    |
+| `q` | quit (running engines are unaffected)                                      |
 
 In the settings editor: `ctrl+s` saves, `escape` goes back without saving.
 In any modal: `escape` cancels.
@@ -240,7 +248,22 @@ this run` when the original engine still appears to be running. Heed this
   mean the pid was recycled by another process — verify before resuming.
 
 Confirming spawns `bmad-auto resume <run-id>` detached in `bmad-auto-ctl`,
-like any other launch.
+like any other launch. Resume drops any stale `bmad-auto-<run-id>` session a
+stopped or interrupted run left behind and spins up a fresh one, so the run
+never re-attaches to a dead session.
+
+## Cleaning up sessions (`c`)
+
+`c` removes leftover tmux artifacts in one pass, after a confirmation modal:
+every `bmad-auto-<run-id>` agent session whose run has finished, stopped, or
+crashed (and any orphan whose run dir is gone), plus the parked
+`[bmad-auto exited …]` windows in `bmad-auto-ctl`. Live runs — and the window
+you triggered the cleanup from — are always spared, so it is safe to press at
+any time. A toast reports how many sessions and windows were closed. The same
+sweep is available from a plain shell as `bmad-auto cleanup` (`--dry-run` to
+preview). Runs already tear their own session down on finish unless you set
+`[adapter] cleanup_session_on_finish = false`; `c` is for the backlog that
+predates that, or that the flag deliberately keeps around.
 
 ## Resolving an escalation (`R`)
 
@@ -332,6 +355,7 @@ behavior.
 | `adapter.name`                        | text                   | `claude`         | CLI profile: `claude` / `codex` / `gemini` / custom |
 | `adapter.model`                       | text                   | (CLI default)    | model override                                      |
 | `adapter.extra_args`                  | override switch + args | profile defaults | see below                                           |
+| `adapter.cleanup_session_on_finish`   | switch                 | on               | kill the run's tmux session on finish; off keeps it |
 | `adapter.dev` / `.review` / `.triage` | text ×2 + args         | inherit          | per-stage `name` / `model` / `extra_args` overrides |
 | `sweep.auto`                          | select                 | `never`          | `never` / `per-epic` / `run-end`                    |
 | `sweep.max_bundles`                   | int ≥ 1                | 5                | bundles per sweep; triage excess truncated          |

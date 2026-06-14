@@ -147,6 +147,42 @@ def test_happy_path(project):
     assert adapter.sessions[1].prompt.startswith("/bmad-auto-review ")
 
 
+def test_finish_kills_session_when_enabled(project, monkeypatch):
+    import automator.engine as engine_mod
+
+    killed: list[str] = []
+    monkeypatch.setattr(engine_mod, "kill_session", lambda rid: killed.append(rid))
+    write_sprint(project, {"epic-1": "backlog", "1-1-a": "ready-for-dev"})
+    engine, _ = make_engine(
+        project,
+        [dev_effect(project, "1-1-a"), review_effect(project, "1-1-a", clean=True)],
+    )
+    engine.run()
+    assert engine.state.finished
+    assert killed == ["test-run"]
+
+
+def test_finish_keeps_session_when_disabled(project, monkeypatch):
+    import automator.engine as engine_mod
+
+    killed: list[str] = []
+    monkeypatch.setattr(engine_mod, "kill_session", lambda rid: killed.append(rid))
+    write_sprint(project, {"epic-1": "backlog", "1-1-a": "ready-for-dev"})
+    policy = Policy(
+        gates=GatesPolicy(mode="none"),
+        notify=QUIET,
+        adapter=AdapterPolicy(cleanup_session_on_finish=False),
+    )
+    engine, _ = make_engine(
+        project,
+        [dev_effect(project, "1-1-a"), review_effect(project, "1-1-a", clean=True)],
+        policy=policy,
+    )
+    engine.run()
+    assert engine.state.finished
+    assert killed == []
+
+
 def test_per_stage_adapter_and_model_dispatch(project):
     """Dev and review sessions go to their own adapters with per-stage models."""
     write_sprint(project, {"epic-1": "backlog", "1-1-a": "ready-for-dev"})

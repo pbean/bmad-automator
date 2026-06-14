@@ -193,6 +193,53 @@ def test_start_detached_returns_window_id(fake_run, tmp_path: Path):
     assert launch.start_resolve_detached(tmp_path, "RID") == "@7"
 
 
+def test_prune_ctl_windows(monkeypatch, tmp_path: Path):
+    from automator import runs
+
+    # one live run (this process's pid); the others have no run dir
+    live = tmp_path / ".automator" / "runs" / "20260101-000000-live"
+    live.mkdir(parents=True)
+    (live / "state.json").write_text("{}")
+    runs.write_pid(live)
+
+    windows = (
+        "@1\t0\n"  # the session's initial shell — not a run window
+        "@2\trun-20260101-000000-live\n"  # live run — keep
+        "@3\tsweep-20260101-000000-dead\n"  # no run dir — orphan, kill
+        "@4\tresume-20260101-000000-cur\n"  # would match, but is the current window
+    )
+    killed: list[list[str]] = []
+
+    def fake(argv, **kwargs):
+        verb = argv[1]
+        if verb == "has-session":
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if verb == "display-message":  # we are sitting in @4
+            return subprocess.CompletedProcess(argv, 0, stdout="@4\n", stderr="")
+        if verb == "list-windows":
+            return subprocess.CompletedProcess(argv, 0, stdout=windows, stderr="")
+        if verb == "kill-window":
+            killed.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    monkeypatch.setattr(launch.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert launch.prunable_ctl_windows(tmp_path) == ["sweep-20260101-000000-dead"]
+    assert killed == []  # dry-run view kills nothing
+    assert launch.prune_ctl_windows(tmp_path) == ["sweep-20260101-000000-dead"]
+    assert killed == [["tmux", "kill-window", "-t", "@3"]]
+
+
+def test_prune_ctl_windows_no_session(monkeypatch, tmp_path: Path):
+    def fake(argv, **kwargs):  # has-session reports the ctl session is gone
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    monkeypatch.setattr(launch.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert launch.prune_ctl_windows(tmp_path) == []
+
+
 def test_select_ctl_window_id_argv(fake_run):
     launch.select_ctl_window_id("@7")
     assert fake_run.calls == [["tmux", "select-window", "-t", "@7"]]

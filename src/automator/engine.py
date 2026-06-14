@@ -123,6 +123,12 @@ class Engine:
                 self._loop()
                 self.state.finished = True
                 self.journal.append("run-complete")
+                # tear down the run's agent session now that it finished. Only
+                # the outermost engine owns this (nested auto-sweep never sets
+                # _owns_signals); stop already kills it, and pause/interrupt
+                # leave it for resume to reuse.
+                if self._owns_signals and self.policy.adapter.cleanup_session_on_finish:
+                    kill_session(self.state.run_id)
             except RunPaused as pause:
                 self.state.paused_reason = pause.reason
                 self.state.paused_stage = pause.stage

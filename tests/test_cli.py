@@ -399,3 +399,55 @@ def test_sweep_command_parses_flags():
     assert captured["repeat"] is True
     assert captured["max_cycles"] == 4
     assert captured["dry_run"] is True
+
+
+# ------------------------------------------------------------------- cleanup
+
+
+def test_cleanup_dry_run_lists_without_pruning(tmp_path, monkeypatch, capsys):
+    from automator import runs
+    from automator.tui import launch
+
+    monkeypatch.setattr(runs, "prunable_sessions", lambda _proj: (["fin-1"], ["live-1"]))
+    monkeypatch.setattr(launch, "prunable_ctl_windows", lambda _proj: ["sweep-fin-1"])
+    pruned: list[str] = []
+    monkeypatch.setattr(runs, "prune_sessions", lambda _proj: pruned.append("x") or [])
+
+    assert cli.main(["cleanup", "--project", str(tmp_path), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would kill session bmad-auto-fin-1" in out
+    assert "would close ctl window sweep-fin-1" in out
+    assert "leaving 1 live session(s) untouched" in out
+    assert pruned == []  # dry-run prunes nothing
+
+
+def test_cleanup_prunes_sessions_and_windows(tmp_path, monkeypatch, capsys):
+    from automator import runs
+    from automator.tui import launch
+
+    monkeypatch.setattr(runs, "prunable_sessions", lambda _proj: (["fin-1"], []))
+    monkeypatch.setattr(runs, "prune_sessions", lambda _proj: ["fin-1"])
+    monkeypatch.setattr(launch, "prune_ctl_windows", lambda _proj: ["sweep-fin-1"])
+
+    assert cli.main(["cleanup", "--project", str(tmp_path)]) == 0
+    assert "removed 1 session(s), 1 ctl window(s)" in capsys.readouterr().out
+
+
+def test_resume_kills_stale_session_before_running(project, monkeypatch):
+    from automator import runs
+
+    install_bmad_config(project)
+    write_sprint(project, {"1-1-a": "ready-for-dev"})
+    run_dir = _make_run_with_state(
+        project.project,
+        "20990101-000000-beef",
+        paused_reason="spec approval",
+        paused_stage="spec-approval",
+    )
+    killed: list[str] = []
+    monkeypatch.setattr(runs, "kill_session", lambda rid: killed.append(rid))
+    monkeypatch.setattr(cli, "Engine", _StubEngine)
+    monkeypatch.setattr(cli, "_make_adapters", lambda *a, **k: {r: None for r in cli.ROLES})
+
+    assert cli._resume_paused_run(project.project, run_dir) == 0
+    assert killed == ["20990101-000000-beef"]

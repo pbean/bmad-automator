@@ -122,6 +122,61 @@ def kill_session(run_id: str) -> None:
         pass
 
 
+CTL_SESSION = "bmad-auto-ctl"
+_SESSION_PREFIX = "bmad-auto-"
+
+
+def tmux_sessions() -> list[str]:
+    """All live tmux session names, or [] when tmux is missing, no server is
+    running, or the query fails."""
+    if not shutil.which("tmux"):
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_TIMEOUT_S,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if proc.returncode != 0:  # no server / no sessions
+        return []
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def prunable_sessions(project: Path) -> tuple[list[str], list[str]]:
+    """Partition the bmad-auto-<id> agent sessions into (prunable, live) run ids.
+
+    The control session (bmad-auto-ctl) is never a candidate. A session is live
+    only when its run dir exists and holds a provably-alive engine pid;
+    everything else — finished, stopped, interrupted, or orphaned (run dir
+    deleted) — is prunable.
+    """
+    prunable: list[str] = []
+    live: list[str] = []
+    for name in tmux_sessions():
+        if name == CTL_SESSION or not name.startswith(_SESSION_PREFIX):
+            continue
+        run_id = name[len(_SESSION_PREFIX) :]
+        run_dir = run_dir_for(project, run_id)
+        if is_run(run_dir) and engine_alive(run_dir):
+            live.append(run_id)
+        else:
+            prunable.append(run_id)
+    return prunable, live
+
+
+def prune_sessions(project: Path, *, dry_run: bool = False) -> list[str]:
+    """Kill every prunable bmad-auto-<id> session (see prunable_sessions);
+    returns the run ids that were (or, with dry_run, would be) killed."""
+    prunable, _ = prunable_sessions(project)
+    if not dry_run:
+        for run_id in prunable:
+            kill_session(run_id)
+    return prunable
+
+
 def stop_run(run_dir: Path) -> bool:
     """Stop a live run. Returns False if it was already finished.
 

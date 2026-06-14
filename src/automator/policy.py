@@ -80,6 +80,9 @@ class AdapterPolicy:
     model: str = ""
     # None = use the profile's default bypass flags; a list replaces them
     extra_args: tuple[str, ...] | None = None
+    # kill the run's bmad-auto-<id> tmux session when it finishes (False keeps
+    # it around for post-run inspection)
+    cleanup_session_on_finish: bool = True
     dev: StageAdapterPolicy = field(default_factory=StageAdapterPolicy)
     review: StageAdapterPolicy = field(default_factory=StageAdapterPolicy)
     triage: StageAdapterPolicy = field(default_factory=StageAdapterPolicy)
@@ -209,6 +212,9 @@ def loads(text: str) -> Policy:
         name=str(adapter_d.get("name", AdapterPolicy.name)),
         model=str(adapter_d.get("model", AdapterPolicy.model)),
         extra_args=None if raw_extra is None else tuple(str(a) for a in raw_extra),
+        cleanup_session_on_finish=bool(
+            adapter_d.get("cleanup_session_on_finish", AdapterPolicy.cleanup_session_on_finish)
+        ),
         dev=_stage_adapter(adapter_d, "dev"),
         review=_stage_adapter(adapter_d, "review"),
         triage=_stage_adapter(adapter_d, "triage"),
@@ -278,6 +284,7 @@ file = true                  # ATTENTION file in the run dir
 [adapter]
 name = "claude"              # claude | codex | gemini | <custom .automator/profiles/*.toml>
 model = ""                   # empty = CLI default model
+cleanup_session_on_finish = true  # kill the run's tmux session when it finishes (false keeps it for inspection)
 # extra_args replaces the profile's default permission-bypass flags when set:
 # extra_args = ["--permission-mode", "bypassPermissions"]
 

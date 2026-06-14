@@ -100,6 +100,7 @@ class BmadAutoApp(App[None]):
         Binding("x", "stop_run", "stop"),
         Binding("D", "delete_run", "delete"),
         Binding("A", "archive_run", "archive"),
+        Binding("c", "cleanup_sessions", "cleanup"),
         Binding("v", "validate", "validate"),
         Binding("g", "settings", "settings"),
         Binding("d", "toggle_dark", "dark"),
@@ -449,6 +450,32 @@ class BmadAutoApp(App[None]):
             return
         self.call_from_thread(self._dashboard.forget_run, run_id)
         self.call_from_thread(self.notify, f"run {run_id} archived to {dest}")
+
+    def action_cleanup_sessions(self) -> None:
+        if self._tmux_missing():
+            return
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._cleanup_sessions_worker()
+
+        self.push_screen(
+            ConfirmModal(
+                "cleanup sessions",
+                "remove tmux sessions/windows for finished & stopped runs?",
+                confirm_label="cleanup",
+            ),
+            done,
+        )
+
+    @work(thread=True, group="lifecycle")
+    def _cleanup_sessions_worker(self) -> None:
+        killed = runs.prune_sessions(self.project)
+        windows = launch.prune_ctl_windows(self.project)
+        self.call_from_thread(
+            self.notify,
+            f"removed {len(killed)} session(s), {len(windows)} window(s)",
+        )
 
     def action_validate(self) -> None:
         self._show_captured("validate", ["validate", "--project", str(self.project)])

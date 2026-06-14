@@ -12,13 +12,19 @@ No textual imports here — everything is subprocess-level and unit-testable.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from .. import runs
+
 CTL_SESSION = "bmad-auto-ctl"
+
+# control-session windows are named <kind>-<run_id> (see start_detached)
+_CTL_WINDOW_RE = re.compile(r"^(?:run|sweep|resume|resolve)-(.+)$")
 
 
 class LaunchError(Exception):
@@ -89,6 +95,59 @@ def kill_ctl_window(run_id: str) -> None:
     window = ctl_window(run_id)
     if window is not None:
         _tmux("kill-window", "-t", f"={CTL_SESSION}:{window}")
+
+
+def _current_window_id() -> str | None:
+    """Stable tmux id (@N) of the window this process runs in, or None when not
+    inside tmux / tmux is unavailable."""
+    proc = _tmux("display-message", "-p", "#{window_id}")
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _ctl_window_candidates(project: Path) -> list[tuple[str, str]]:
+    """(window_id, window_name) for parked control-session run windows whose run
+    is no longer live — the kill candidates for a prune.
+
+    A `<kind>-<run_id>` window parks on a `read` prompt that never closes on its
+    own; it is a candidate once its run has finished/stopped/crashed (or its run
+    dir is gone). The current window is excluded so a prune triggered from inside
+    the ctl session never targets itself; live runs and the session's own shell
+    window are excluded too.
+    """
+    if not tmux_available() or not session_exists(CTL_SESSION):
+        return []
+    current = _current_window_id()
+    proc = _tmux("list-windows", "-t", f"={CTL_SESSION}", "-F", "#{window_id}\t#{window_name}")
+    if proc.returncode != 0:
+        return []
+    candidates: list[tuple[str, str]] = []
+    for line in proc.stdout.splitlines():
+        win_id, _, name = line.partition("\t")
+        if not win_id or win_id == current:
+            continue
+        m = _CTL_WINDOW_RE.match(name)
+        if m is None:
+            continue  # not a run window (e.g. the session's initial shell)
+        run_dir = runs.run_dir_for(project, m.group(1))
+        if runs.is_run(run_dir) and runs.engine_alive(run_dir):
+            continue
+        candidates.append((win_id, name))
+    return candidates
+
+
+def prunable_ctl_windows(project: Path) -> list[str]:
+    """Names of the control-session windows a prune would close (dry-run view)."""
+    return [name for _, name in _ctl_window_candidates(project)]
+
+
+def prune_ctl_windows(project: Path) -> list[str]:
+    """Close parked control-session windows whose run is no longer live; returns
+    the names of the windows that were closed (see _ctl_window_candidates)."""
+    killed: list[str] = []
+    for win_id, name in _ctl_window_candidates(project):
+        _tmux("kill-window", "-t", win_id)
+        killed.append(name)
+    return killed
 
 
 def _ensure_ctl_session(project: Path) -> None:

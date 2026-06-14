@@ -171,6 +171,59 @@ def test_stop_run_respects_engine_written_stopped(tmp_path, monkeypatch):
     assert not journal.exists() or "fallback" not in journal.read_text()
 
 
+# ---------------------------------------------------------------- prune sessions
+
+
+def test_tmux_sessions_no_tmux(monkeypatch):
+    monkeypatch.setattr(runs.shutil, "which", lambda _name: None)
+    assert runs.tmux_sessions() == []
+
+
+def test_tmux_sessions_no_server(monkeypatch):
+    monkeypatch.setattr(runs.shutil, "which", lambda _name: "/usr/bin/tmux")
+    monkeypatch.setattr(
+        runs.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="no server"),
+    )
+    assert runs.tmux_sessions() == []
+
+
+def test_prunable_sessions_partitions(tmp_path, monkeypatch):
+    # live run: real run dir with this process's pid
+    live = _make_state_run(tmp_path, "live-1")
+    runs.write_pid(live)
+    # finished run: run dir exists but dead pid
+    finished = _make_state_run(tmp_path, "fin-1")
+    (finished / "engine.pid").write_text(str(_dead_pid()))
+    # orphan: a session whose run dir is gone
+
+    monkeypatch.setattr(
+        runs,
+        "tmux_sessions",
+        lambda: [
+            "bmad-auto-live-1",
+            "bmad-auto-fin-1",
+            "bmad-auto-orphan-1",
+            "bmad-auto-ctl",  # control session: never a candidate
+            "unrelated",  # not ours
+        ],
+    )
+    prunable, alive = runs.prunable_sessions(tmp_path)
+    assert sorted(prunable) == ["fin-1", "orphan-1"]
+    assert alive == ["live-1"]
+
+
+def test_prune_sessions_dry_run_kills_nothing(tmp_path, monkeypatch):
+    killed: list[str] = []
+    monkeypatch.setattr(runs, "kill_session", lambda rid: killed.append(rid))
+    monkeypatch.setattr(runs, "tmux_sessions", lambda: ["bmad-auto-fin-1"])
+    assert runs.prune_sessions(tmp_path, dry_run=True) == ["fin-1"]
+    assert killed == []
+    assert runs.prune_sessions(tmp_path) == ["fin-1"]
+    assert killed == ["fin-1"]
+
+
 def test_delete_run(tmp_path):
     run_dir = _make_state_run(tmp_path, "r1")
     runs.delete_run(run_dir)

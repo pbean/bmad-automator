@@ -390,6 +390,9 @@ def _resume_paused_run(project: Path, run_dir: Path) -> int:
     journal.append("run-resume", was_paused=state.paused_reason)
     state.clear_pause()
     runs.write_pid(run_dir)
+    # drop any stale agent session so the run spins up a fresh one (a stopped or
+    # interrupted run can leave a lingering bmad-auto-<id> session behind).
+    runs.kill_session(run_dir.name)
     adapters = _make_adapters(project, run_dir, pol)
     if state.run_type == "sweep":
         opts_path = run_dir / "sweep.json"
@@ -612,6 +615,31 @@ def cmd_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    from .tui import launch  # pure stdlib; no textual import
+
+    project = _project(args)
+    prunable, live = runs.prunable_sessions(project)
+    if args.dry_run:
+        windows = launch.prunable_ctl_windows(project)
+        if not prunable and not windows:
+            print("nothing to clean up")
+        else:
+            for run_id in prunable:
+                print(f"would kill session bmad-auto-{run_id}")
+            for name in windows:
+                print(f"would close ctl window {name}")
+        if live:
+            print(f"leaving {len(live)} live session(s) untouched")
+        return 0
+    killed = runs.prune_sessions(project)
+    windows = launch.prune_ctl_windows(project)
+    print(f"removed {len(killed)} session(s), {len(windows)} ctl window(s)")
+    if live:
+        print(f"left {len(live)} live session(s) untouched")
+    return 0
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     project = _project(args)
     try:
@@ -751,6 +779,15 @@ def main(argv: list[str] | None = None) -> int:
     archive_p.add_argument("run_id")
     archive_p.add_argument(
         "--force", action="store_true", help="stop the run first if it is still live"
+    )
+
+    cleanup_p = add(
+        "cleanup", cmd_cleanup, "remove tmux sessions/windows for finished or stopped runs"
+    )
+    cleanup_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="list what would be removed without killing anything",
     )
 
     add(

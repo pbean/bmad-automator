@@ -11,6 +11,16 @@ def test_defaults_when_file_missing(tmp_path):
     assert pol.adapter.extra_args is None  # None = use the profile's bypass flags
 
 
+def test_cleanup_session_on_finish_default_and_override(tmp_path):
+    assert policy.load(None).adapter.cleanup_session_on_finish is True
+    p = tmp_path / "policy.toml"
+    p.write_text("""
+[adapter]
+cleanup_session_on_finish = false
+""")
+    assert policy.load(p).adapter.cleanup_session_on_finish is False
+
+
 def test_load_values(tmp_path):
     p = tmp_path / "policy.toml"
     p.write_text("""
