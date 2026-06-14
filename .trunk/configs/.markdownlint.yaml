@@ -7,3 +7,8 @@ extends: markdownlint/style/prettier
 # (e.g. **Steps**, status banners) that are deliberately emphasis, not headings.
 MD033: false
 MD036: false
+# MD024 (no-duplicate-heading): CHANGELOG.md repeats ### Added / ### Changed /
+# ### Fixed under every version, which is the Keep a Changelog format. Restrict the
+# rule to sibling headings so same-named sections under different ## versions are fine.
+MD024:
+  siblings_only: true
