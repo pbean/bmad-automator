@@ -7,6 +7,16 @@ breaking changes may land in a minor release.
 
 ## [0.3.2] — 2026-06-14
 
+### Fixed
+
+- **Empty optional numeric fields no longer flash a red "invalid" outline.** The start-run
+  and start-sweep modals draw their numeric inputs (`epic`, `max stories`, `max bundles`)
+  with `type="integer"`, which under Textual validates on blur and — with the default
+  `valid_empty=False` — treats an empty string as invalid. Tabbing past a blank field that
+  is explicitly optional ("blank for all", "blank for no limit") therefore tripped the red
+  `$error` border. The inputs now pass `valid_empty=True`, matching the settings screen, so
+  leaving them blank is accepted silently while a typed integer still validates.
+
 ### Changed
 
 - **`bmad-auto-setup` now upgrades, not just installs.** Re-running the skill (or invoking

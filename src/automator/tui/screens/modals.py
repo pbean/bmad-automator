@@ -67,11 +67,17 @@ class StartRunModal(BaseDialog):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("start run", classes="title")
-            yield Input(placeholder="epic — blank for all", type="integer", id="epic")
+            yield Input(
+                placeholder="epic — blank for all",
+                type="integer",
+                valid_empty=True,
+                id="epic",
+            )
             yield Input(placeholder="story key — blank for all", id="story")
             yield Input(
                 placeholder="max stories — blank for no limit",
                 type="integer",
+                valid_empty=True,
                 id="max-stories",
             )
             yield Checkbox("dry run (print the plan, spawn nothing)", id="dry-run")
@@ -105,6 +111,7 @@ class StartSweepModal(BaseDialog):
             yield Input(
                 placeholder="max bundles — blank for policy default",
                 type="integer",
+                valid_empty=True,
                 id="max-bundles",
             )
             yield Checkbox("dry run (list open entries, spawn nothing)", id="dry-run")
