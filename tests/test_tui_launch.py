@@ -91,6 +91,11 @@ def test_start_run_detached_argv(fake_run, tmp_path: Path):
         in shell
     )
     assert "read -r" in shell  # window stays open showing the exit status
+    # after the read, return the attached client to where it came from: switch a
+    # same-tmux client back to its pane, or detach a throwaway external client
+    assert "@bmad_return_pane" in shell
+    assert "switch-client" in shell
+    assert "detach-client" in shell
 
 
 def test_start_run_omits_blank_filters(fake_run, tmp_path: Path):
@@ -187,6 +192,29 @@ def test_ctl_window_no_session_or_tmux(monkeypatch):
 def test_select_ctl_window_argv(fake_run):
     launch.select_ctl_window("sweep-RID")
     assert fake_run.calls == [["tmux", "select-window", "-t", "=bmad-auto-ctl:sweep-RID"]]
+
+
+def test_set_return_pane_argv(fake_run):
+    launch.set_return_pane("=bmad-auto-ctl:sweep-RID", "%9")
+    assert fake_run.calls == [
+        ["tmux", "set-option", "-w", "-t", "=bmad-auto-ctl:sweep-RID", "@bmad_return_pane", "%9"]
+    ]
+
+
+def test_current_pane_id_reads_pane(monkeypatch):
+    def fake(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout="%9\n", stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    assert launch.current_pane_id() == "%9"
+
+
+def test_current_pane_id_none_outside_tmux(monkeypatch):
+    def fake(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no server")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    assert launch.current_pane_id() is None
 
 
 def test_start_detached_returns_window_id(fake_run, tmp_path: Path):

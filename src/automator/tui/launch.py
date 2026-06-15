@@ -70,6 +70,33 @@ def select_ctl_window_id(window_id: str) -> None:
     _tmux("select-window", "-t", window_id)
 
 
+# Per-window tmux user option recording what an interactive attach should do
+# with the client once the window's command exits (see RETURN_TRAILER in
+# start_detached). Set by set_return_pane at attach time. Value is either a pane
+# id (%N) to switch the client to — used when the TUI runs inside tmux and
+# switched its own client over — or RETURN_DETACH, used when the TUI runs
+# outside tmux and a throwaway client was attached that must detach so the
+# suspended TUI resumes.
+RETURN_OPTION = "@bmad_return_pane"
+RETURN_DETACH = "detach"  # pane ids are %N, so this never collides with one
+
+
+def current_pane_id() -> str | None:
+    """Stable tmux id (%N) of the pane this process runs in, or None when not
+    inside tmux / tmux is unavailable. For the TUI process this is its own pane
+    — the place an attach should return the client to."""
+    proc = _tmux("display-message", "-p", "#{pane_id}")
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def set_return_pane(window_target: str, pane_id: str) -> None:
+    """Record `pane_id` as the return target on a control-session window, so its
+    trailing shell switches the client back there when the window's command
+    exits. `window_target` is any tmux window spec (e.g. `=bmad-auto-ctl:run-…`
+    or a stable `@N` id)."""
+    _tmux("set-option", "-w", "-t", window_target, RETURN_OPTION, pane_id)
+
+
 def current_session() -> str | None:
     """Name of the tmux session this process is running inside, or None when
     not in tmux / tmux is unavailable."""
@@ -164,12 +191,32 @@ def cli_argv(*tail: str) -> list[str]:
     return [sys.executable, "-m", "automator.cli", *tail]
 
 
+# After the parked `read`, return the user where they came from instead of
+# stranding them in the control session, then let the window close on its own
+# (sh exits). The action recorded by set_return_pane decides how:
+#   - a pane id (%N): the TUI is inside tmux and switched its own client here;
+#     switch that client back to the TUI's pane (`-l` is a best-effort fallback
+#     when the recorded pane is gone).
+#   - "detach": the TUI is outside tmux and a throwaway client attached; detach
+#     it so the blocking `tmux attach` returns and the suspended TUI resumes.
+#   - unset: nobody attached interactively (a plain detached run) — do nothing
+#     and park exactly as before.
+RETURN_TRAILER = (
+    f"ret=$(tmux show-options -wqv {RETURN_OPTION} 2>/dev/null); "
+    f'if [ "$ret" = "{RETURN_DETACH}" ]; then tmux detach-client 2>/dev/null; '
+    'elif [ -n "$ret" ]; then '
+    'tmux switch-client -t "$ret" 2>/dev/null || tmux switch-client -l 2>/dev/null; '
+    "fi"
+)
+
+
 def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) -> str | None:
     """Run a bmad-auto command in a new window of the control session.
 
     The window runs under explicit `sh -c` (the user's login shell may be
     fish); the trailing `read` keeps the exit status inspectable instead of
-    tmux closing the window the moment the process exits.
+    tmux closing the window the moment the process exits. After the read it runs
+    RETURN_TRAILER, which switches an attached client back to its origin pane.
 
     Returns the new window's stable tmux id (@N) so callers can target it
     unambiguously (window names collide when several kinds share a run_id).
@@ -178,7 +225,10 @@ def start_detached(project: Path, argv_tail: list[str], run_id: str, kind: str) 
         raise LaunchError("tmux not found on PATH")
     _ensure_ctl_session(project)
     inner = shlex.join(cli_argv(*argv_tail))
-    shell = f'{inner}; ec=$?; echo "[bmad-auto exited $ec — press enter]"; read -r'
+    shell = (
+        f'{inner}; ec=$?; echo "[bmad-auto exited $ec — press enter]"; '
+        f"read -r; {RETURN_TRAILER}"
+    )
     proc = _tmux(
         "new-window",
         "-d",
