@@ -311,7 +311,11 @@ class BmadAutoApp(App[None]):
         # live agent session, falling back to the ctl window between sessions.
         if window is not None and (self._dashboard.decision_pending is not None or not agent_live):
             launch.select_ctl_window(window)
-            target = f"={launch.CTL_SESSION}"
+            self._attach_to_target(
+                f"={launch.CTL_SESSION}",
+                return_window=f"={launch.CTL_SESSION}:{window}",
+            )
+            return
         elif agent_live:
             target = f"={session}"
         else:
@@ -325,11 +329,25 @@ class BmadAutoApp(App[None]):
             return
         self._attach_to_target(target)
 
-    def _attach_to_target(self, target: str) -> None:
+    def _attach_to_target(self, target: str, return_window: str | None = None) -> None:
         argv = runs.attach_target_argv(target)
         if os.environ.get("TMUX"):
-            subprocess.call(argv)  # switch-client: this client comes right back
+            # switch-client is fire-and-forget; record our own pane on the ctl
+            # window so its trailing shell switches the client back here when it
+            # exits, instead of stranding the user in the control session.
+            if return_window is not None:
+                pane = launch.current_pane_id()
+                if pane is not None:
+                    launch.set_return_pane(return_window, pane)
+            subprocess.call(argv)
             return
+        # Outside tmux we attach a throwaway client (under suspend). The ctl
+        # session keeps its own shell window, so a closed run window would leave
+        # that client parked on the shell rather than ending the attach; tell the
+        # window to detach the client on exit so `tmux attach` returns and the
+        # TUI resumes where the user left it.
+        if return_window is not None:
+            launch.set_return_pane(return_window, launch.RETURN_DETACH)
         try:
             with self.suspend():
                 subprocess.call(argv)
@@ -379,7 +397,7 @@ class BmadAutoApp(App[None]):
                 )
                 return
             launch.select_ctl_window_id(win_id)
-            self._attach_to_target(f"={launch.CTL_SESSION}")
+            self._attach_to_target(f"={launch.CTL_SESSION}", return_window=win_id)
 
         self.push_screen(
             ConfirmModal(

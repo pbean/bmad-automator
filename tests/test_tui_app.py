@@ -867,15 +867,20 @@ async def test_decision_banner_shows_and_clears(project):
         assert "decision needed" not in header
 
 
-def _patch_attach_exec(monkeypatch) -> list[list[str]]:
+def _patch_attach_exec(monkeypatch) -> tuple[list[list[str]], list[tuple[str, str]]]:
     """Route the final attach exec into a list: pretend we are inside tmux so
-    action_attach takes the plain subprocess.call(switch-client) path."""
+    action_attach takes the plain subprocess.call(switch-client) path. Stub the
+    TUI pane id and capture return-pane stamps so no real tmux is touched and
+    tests can assert which ctl window gets the switch-back target recorded."""
     calls: list[list[str]] = []
+    stamps: list[tuple[str, str]] = []
     monkeypatch.setenv("TMUX", "/tmp/fake-tmux,1,0")
     monkeypatch.setattr(
         "automator.tui.app.subprocess.call", lambda argv: calls.append(list(argv)) or 0
     )
-    return calls
+    monkeypatch.setattr(launch, "current_pane_id", lambda: "%9")
+    monkeypatch.setattr(launch, "set_return_pane", lambda w, p: stamps.append((w, p)))
+    return calls, stamps
 
 
 async def test_attach_targets_ctl_window_when_decision_pending(project, monkeypatch):
@@ -886,7 +891,7 @@ async def test_attach_targets_ctl_window_when_decision_pending(project, monkeypa
     monkeypatch.setattr(launch, "session_exists", lambda session: True)  # agent up too
     monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"sweep-{run_id}")
     monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
-    calls = _patch_attach_exec(monkeypatch)
+    calls, stamps = _patch_attach_exec(monkeypatch)
     app = BmadAutoApp(project.project)
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
@@ -895,6 +900,30 @@ async def test_attach_targets_ctl_window_when_decision_pending(project, monkeypa
         await until(pilot, lambda: bool(calls))
     assert selected == ["sweep-20260611-100000-aaaa"]
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+    # the ctl window is stamped with our pane so it switches us back on exit
+    assert stamps == [("=bmad-auto-ctl:sweep-20260611-100000-aaaa", "%9")]
+
+
+async def test_attach_outside_tmux_stamps_detach(project, monkeypatch):
+    # No TMUX: a throwaway client attaches under suspend, so the ctl window is
+    # stamped to detach it on exit (returning to the suspended TUI) rather than
+    # switch-client back to a pane we do not have.
+    run_dir = make_run(project.project, "20260611-100000-aaaa", run_type="sweep", alive=True)
+    Journal(run_dir).append("decision-pending", dw_id="DW-7", question="q?")
+    monkeypatch.delenv("TMUX", raising=False)
+    stamps: list[tuple[str, str]] = []
+    monkeypatch.setattr(launch, "tmux_available", lambda: True)
+    monkeypatch.setattr(launch, "session_exists", lambda session: True)
+    monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"sweep-{run_id}")
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: None)
+    monkeypatch.setattr(launch, "set_return_pane", lambda w, p: stamps.append((w, p)))
+    app = BmadAutoApp(project.project)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await until(pilot, lambda: dashboard(app).decision_pending is not None)
+        await pilot.press("a")
+        await until(pilot, lambda: bool(stamps))
+    assert stamps == [("=bmad-auto-ctl:sweep-20260611-100000-aaaa", "detach")]
 
 
 async def test_attach_prefers_agent_session_without_decision(project, monkeypatch):
@@ -902,7 +931,7 @@ async def test_attach_prefers_agent_session_without_decision(project, monkeypatc
     monkeypatch.setattr(launch, "tmux_available", lambda: True)
     monkeypatch.setattr(launch, "session_exists", lambda session: True)
     monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"run-{run_id}")
-    calls = _patch_attach_exec(monkeypatch)
+    calls, stamps = _patch_attach_exec(monkeypatch)
     app = BmadAutoApp(project.project)
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
@@ -910,6 +939,8 @@ async def test_attach_prefers_agent_session_without_decision(project, monkeypatc
         await pilot.press("a")
         await until(pilot, lambda: bool(calls))
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-20260611-100000-aaaa"]]
+    # attaching to a live agent session is not our parked window — nothing stamped
+    assert stamps == []
 
 
 async def test_attach_falls_back_to_ctl_window(project, monkeypatch):
@@ -919,7 +950,7 @@ async def test_attach_falls_back_to_ctl_window(project, monkeypatch):
     monkeypatch.setattr(launch, "session_exists", lambda session: False)
     monkeypatch.setattr(launch, "ctl_window", lambda run_id: f"run-{run_id}")
     monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
-    calls = _patch_attach_exec(monkeypatch)
+    calls, stamps = _patch_attach_exec(monkeypatch)
     app = BmadAutoApp(project.project)
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
@@ -928,6 +959,7 @@ async def test_attach_falls_back_to_ctl_window(project, monkeypatch):
         await until(pilot, lambda: bool(calls))
     assert selected == ["run-20260611-100000-aaaa"]
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+    assert stamps == [("=bmad-auto-ctl:run-20260611-100000-aaaa", "%9")]
 
 
 async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
@@ -942,7 +974,7 @@ async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
 
     monkeypatch.setattr(launch, "start_resolve_detached", fake_start_resolve)
     monkeypatch.setattr(launch, "select_ctl_window_id", lambda w: selected.append(w))
-    calls = _patch_attach_exec(monkeypatch)
+    calls, stamps = _patch_attach_exec(monkeypatch)
     make_run(
         project.project,
         "20260611-100000-aaaa",
@@ -960,6 +992,8 @@ async def test_resolve_escalation_launches_and_attaches(project, monkeypatch):
     assert launched == ["20260611-100000-aaaa"]
     assert selected == ["@7"]
     assert calls == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+    # resolve runs in the freshly launched ctl window (@7) — stamp it to return
+    assert stamps == [("@7", "%9")]
 
 
 async def test_resolve_refused_when_not_escalation(project, monkeypatch):

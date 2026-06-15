@@ -222,7 +222,13 @@ The `[tui]` extra pulls in the dashboard/settings UI (textual); drop it for a he
 
 ### Upgrading
 
-Upgrading is two steps — the tool **and** the per-project skill copies, which `init` froze at install time and an upgrade does not touch:
+**Easiest — let the setup skill do it.** Re-running `/bmad-auto-setup` (or `/bmad-auto-setup upgrade`) on an already-installed project performs the two-step ritual for you: it detects the existing install, upgrades the tool with `--reinstall`, re-lays the per-project skills with `--force-skills`, and re-stamps config — then reports the before → after version.
+
+```bash
+claude "/bmad-auto-setup upgrade"
+```
+
+**Manual — the two steps it runs.** Use these directly for non-Claude CLIs, CI, or scripting. Upgrading is two steps — the tool **and** the per-project skill copies, which `init` froze at install time and a tool upgrade does not touch:
 
 ```bash
 # 1. upgrade the tool. --reinstall is required for a git source: a plain

@@ -5,6 +5,58 @@ All notable changes to `bmad-automator` are documented here. The format is based
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
 
+## [0.3.2] — 2026-06-15
+
+### Added
+
+- **Arrow-key navigation and Enter-to-edit on the settings screen.** Up/Down now move focus
+  between fields (additive — Tab/Shift+Tab still work), and Enter activates the focused field
+  by type: it opens a dropdown (`Select`), toggles a switch, or enters cursor-edit mode on the
+  multi-line box (`TextArea`), where the box's own Up/Down then move the cursor; Escape leaves
+  edit mode without leaving the screen. Plain text/number inputs stay editable on focus, so
+  Enter is a no-op there. Implemented with priority bindings gated by `check_action` so an open
+  dropdown or an editing TextArea keeps Up/Down, and Escape still pops the screen in nav mode.
+
+### Fixed
+
+- **Attaching to answer a deferred-work decision now returns you where you came from.**
+  When a prompting sweep blocks on a decision (or you open a resolve session), pressing
+  `a`/`R` switches a tmux client into the orchestrator's control window so you can answer
+  there — but on exit it left you stranded in the control session on the parked
+  exit-status prompt instead of back at the TUI. The control window now records where the
+  attach came from and, once you press enter, returns you: it switches the client back to
+  the TUI's own pane when the TUI runs inside tmux (i.e. your original session), or
+  detaches the throwaway attach client so the suspended TUI resumes when it runs outside
+  tmux. Windows nobody attached to interactively still park unchanged.
+
+- **Empty optional numeric fields no longer flash a red "invalid" outline.** The start-run
+  and start-sweep modals draw their numeric inputs (`epic`, `max stories`, `max bundles`)
+  with `type="integer"`, which under Textual validates on blur and — with the default
+  `valid_empty=False` — treats an empty string as invalid. Tabbing past a blank field that
+  is explicitly optional ("blank for all", "blank for no limit") therefore tripped the red
+  `$error` border. The inputs now pass `valid_empty=True`, matching the settings screen, so
+  leaving them blank is accepted silently while a typed integer still validates.
+
+### Changed
+
+- **Clearer review toggle on the settings screen.** The `[review]` switch showed only the
+  raw key `enabled`, with no hint about what it controls. It is now relabelled "separate
+  review session" and carries a muted caption spelling out both states (ON: triple review
+  runs in a dedicated 2nd session · OFF: quick-dev runs its own tri-review inline). The
+  change is display-only — the config key and save logic are unchanged.
+
+- **`bmad-auto-setup` now upgrades, not just installs.** Re-running the skill (or invoking
+  it with `upgrade`) on an already-installed project is detected as an upgrade — it runs
+  `uv tool upgrade bmad-automator --reinstall` (the `--reinstall` is required for a git
+  source) and re-lays the per-project skills with `bmad-auto init --force-skills`, then
+  reports the before → after version. Previously a re-run was treated as a config-only
+  update: it left `--force-skills` off, so `init` silently skipped every existing skill
+  dir and the project kept stale skills against the upgraded tool. Upgrade is detected from
+  an existing `bauto` config section and/or a uv-managed `bmad-automator`, and the tool
+  follows `main` by default with an offer to pin a release tag. Docs (README "Upgrading",
+  `docs/setup-guide.md`) now describe the skill-driven upgrade alongside the manual ritual,
+  and the stale `uv tool upgrade bmad-automator` hint (missing `--reinstall`) is corrected.
+
 ## [0.3.1] — 2026-06-14
 
 Maintenance release. Also backfills the previously-undocumented `[0.3.0]` notes below.

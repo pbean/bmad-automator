@@ -18,11 +18,13 @@ from itertools import groupby
 from pathlib import Path
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.validation import Number
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Collapsible,
@@ -61,6 +63,8 @@ class _Field:
     placeholder: str = ""
     minimum: float | None = None
     maximum: float | None = None
+    label: str = ""  # display override; falls back to key when empty
+    description: str = ""  # muted caption shown below the field row
 
     @property
     def widget_id(self) -> str:
@@ -91,7 +95,17 @@ _FIELDS: tuple[_Field, ...] = (
         options=tuple(sorted(RETRO_MODES)),
         default=GatesPolicy.retrospective,
     ),
-    _Field("review", "enabled", "switch", default=ReviewPolicy.enabled),
+    _Field(
+        "review",
+        "enabled",
+        "switch",
+        default=ReviewPolicy.enabled,
+        label="separate review session",
+        description=(
+            "ON: triple review runs in a dedicated 2nd session · "
+            "OFF: quick-dev runs its own tri-review inline, story straight to done"
+        ),
+    ),
     _Field(
         "limits",
         "max_review_cycles",
@@ -188,6 +202,11 @@ class SettingsScreen(Screen[None]):
         padding: 1 1;
         color: $text-muted;
     }
+    SettingsScreen .fielddesc {
+        padding: 0 1 1 32;
+        color: $text-muted;
+        text-style: italic;
+    }
     SettingsScreen .field Input, SettingsScreen .field Select {
         width: 1fr;
     }
@@ -197,6 +216,9 @@ class SettingsScreen(Screen[None]):
     SettingsScreen .field TextArea {
         width: 1fr;
         height: 5;
+    }
+    SettingsScreen .field TextArea.-editing {
+        border: tall $accent;
     }
     SettingsScreen #errors {
         display: none;
@@ -220,12 +242,17 @@ class SettingsScreen(Screen[None]):
     BINDINGS = [
         Binding("escape", "back", "back"),
         Binding("ctrl+s", "save", "save"),
+        Binding("up", "nav_prev", "prev", show=False, priority=True),
+        Binding("down", "nav_next", "next", show=False, priority=True),
+        Binding("enter", "edit_field", "edit", show=False, priority=True),
     ]
 
     def __init__(self, project: Path, doc: PolicyDoc):
         super().__init__()
         self._path = project / POLICY_FILE
         self._doc = doc
+        # The TextArea currently in cursor-edit mode (None = navigation mode).
+        self._editing: Widget | None = None
 
     # ------------------------------------------------------------- compose
 
@@ -257,7 +284,7 @@ class SettingsScreen(Screen[None]):
     def _compose_field(self, spec: _Field) -> ComposeResult:
         raw = self._doc.get(spec.section, spec.key)
         with Horizontal(classes="field"):
-            yield Label(spec.key, classes="fieldname")
+            yield Label(spec.label or spec.key, classes="fieldname")
             if spec.kind == "select":
                 yield Select(
                     [(o, o) for o in spec.options],
@@ -300,9 +327,56 @@ class SettingsScreen(Screen[None]):
                     disabled=not override,
                     id=spec.widget_id,
                 )
+        if spec.description:
+            yield Static(spec.description, classes="fielddesc")
 
     def on_mount(self) -> None:
         self._show_errors(self._doc.validate())
+
+    # ------------------------------------------------------------ keyboard
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # While editing a TextArea, let its own up/down move the cursor instead
+        # of moving focus, and let escape exit edit mode rather than the screen.
+        if action in ("nav_next", "nav_prev"):
+            if self._editing is not None and self.focused is self._editing:
+                return False  # TextArea cursor owns up/down in edit mode
+            if any(select.expanded for select in self.query(Select)):
+                return False  # an open dropdown owns up/down to pick an option
+            return True
+        if action == "edit_field":
+            # Only intercept Enter to start cursor-editing a TextArea; for every
+            # other widget Enter keeps its native meaning (open Select, toggle
+            # Switch, submit Input) and for a TextArea already editing it inserts
+            # a newline.
+            return isinstance(self.focused, TextArea) and self._editing is None
+        if action == "back":
+            return self._editing is None
+        return True
+
+    def action_nav_next(self) -> None:
+        self._exit_edit()
+        self.focus_next()
+
+    def action_nav_prev(self) -> None:
+        self._exit_edit()
+        self.focus_previous()
+
+    def action_edit_field(self) -> None:
+        area = self.focused
+        if isinstance(area, TextArea):
+            self._editing = area
+            area.add_class("-editing")
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape" and self._editing is not None:
+            self._exit_edit()
+            event.stop()
+
+    def _exit_edit(self) -> None:
+        if self._editing is not None:
+            self._editing.remove_class("-editing")
+            self._editing = None
 
     # -------------------------------------------------------------- events
 

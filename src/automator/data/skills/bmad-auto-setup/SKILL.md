@@ -7,7 +7,9 @@ description: Sets up BMAD Automator Skills module in a project. Use when the use
 
 ## Overview
 
-Installs and configures a BMad module into a project. This module is special: alongside the four automation skills it relies on the **bmad-auto orchestrator tool** (the Python program that drives the loop), installed as the `bmad-automator` package from its public Git repository. So setup does two jobs — (1) register module config + help entries, and (2) install the orchestrator tool and bootstrap the project so it is ready to run.
+Installs, configures, **and upgrades** a BMad module in a project. This module is special: alongside the four automation skills it relies on the **bmad-auto orchestrator tool** (the Python program that drives the loop), installed as the `bmad-automator` package from its public Git repository. So setup does two jobs — (1) register module config + help entries, and (2) install **or upgrade** the orchestrator tool and bootstrap the project so it is ready to run.
+
+The same skill handles both first-time setup and **upgrades**. When it detects an existing bmad-auto install (or you ask it to `upgrade`), it upgrades the orchestrator tool, refreshes the per-project `bmad-auto-*` skill copies, and re-stamps config — the two-step upgrade ritual, run for you. A plain re-run on an already-installed project is treated as an upgrade.
 
 Module identity (name, code, version) comes from `./assets/module.yaml`. Collects user preferences and writes them to three files:
 
@@ -28,7 +30,15 @@ Both config scripts use an anti-zombie pattern — existing entries for this mod
    - If `{project-root}/_bmad/config.yaml` **already** has a section for this module: this is a **legacy migration**. Inform the user that legacy per-module config was found alongside existing config, and legacy values will be used as fallback defaults.
    - In both cases, per-module config files and directories will be cleaned up after setup.
 
-If the user provides arguments (e.g. `accept all defaults`, `--headless`, or inline values like `user name is BMad, I speak Swahili`), map any provided values to config keys, use defaults for the rest, and skip interactive prompting. Still display the full confirmation summary at the end.
+**Decide fresh-install vs upgrade.** This drives whether the tool is upgraded and whether the per-project skills are refreshed (see "Install the Orchestrator Tool" below). Treat it as an **upgrade** when **any** of these hold:
+
+- The user asked for one in their arguments — `upgrade`, `update`, `upgrade tool and skills`, or similar.
+- `{project-root}/_bmad/config.yaml` already has a `bauto` section (step 2 above).
+- The orchestrator tool is already installed under uv: run `uv tool list` and look for a `bmad-automator` entry. (A bare `bmad-auto --version` is **not** sufficient on its own — it can be satisfied by a source checkout or unrelated virtualenv; see step 1 of "Install the Orchestrator Tool".)
+
+Otherwise it is a **fresh install**. State the decision to the user before proceeding — e.g. "Detected an existing bmad-auto install — running an upgrade: tool + skills + config" or "No existing install detected — running a fresh setup". When the signals conflict (e.g. config has a `bauto` section but the tool isn't uv-managed), prefer the upgrade path for whatever **is** present and call out what's missing.
+
+If the user provides arguments (e.g. `accept all defaults`, `--headless`, `upgrade`, or inline values like `user name is BMad, I speak Swahili`), map any provided values to config keys, use defaults for the rest, and skip interactive prompting. Still display the full confirmation summary at the end.
 
 ## Collect Configuration
 
@@ -65,17 +75,36 @@ This module ships the **bmad-auto orchestrator** — the Python program that act
 
 > **Why is the tool installed from Git?** The BMAD installer copies only the four skill directories into a project — it does **not** carry sibling files, so the tool can't ride along in the skill folder; it's installed from Git instead. The canonical source is <https://github.com/pbean/bmad-automator>. (The reverse holds, though: the tool's wheel **bundles** the four skills, so `bmad-auto init` lays them down into a project's skill trees on its own — see step 3.)
 
-Unless the user explicitly asked to skip it (e.g. `skills only` / `--no-tool`), install and bootstrap now. In the commands below, resolve `{project-root}` to the real project path before running.
+Unless the user explicitly asked to skip it (e.g. `skills only` / `--no-tool`), install **or upgrade** and bootstrap now. Which branch you take in step 2 follows the fresh-install-vs-upgrade decision from "On Activation". In the commands below, resolve `{project-root}` to the real project path before running.
 
 1. **Check what's already on PATH:** run `bmad-auto --version`. A version printing here does **not** mean this project is set up — it only means _some_ `bmad-auto` is importable in the current environment. Before trusting it, run `uv tool list` and look for `bmad-automator`: if it's absent (the on-PATH copy comes from a source checkout or an unrelated virtualenv), warn the user that the active environment is shadowing a clean install and that the project would be relying on that checkout. Unless the user explicitly declines, install/upgrade from the canonical source below so the project doesn't depend on an incidental dev environment. Only skip the install if the user confirms the on-PATH copy is the one they want this project to use.
 
-2. **Install from the Git repository** (the `[tui]` extra pulls in the Textual dashboard so `bmad-auto tui` works):
+2. **Install or upgrade from the Git repository** (the `[tui]` extra pulls in the Textual dashboard so `bmad-auto tui` works). `uv tool install` puts `bmad-auto` in uv's own managed environment, so there's no PEP 668 externally-managed conflict and no need for `--user`, an activated virtualenv, or `--break-system-packages`.
 
-   ```bash
-   uv tool install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
-   ```
+   - **Fresh install** (no uv-managed `bmad-automator`):
 
-   `uv tool install` puts `bmad-auto` in uv's own managed environment, so there's no PEP 668 externally-managed conflict and no need for `--user`, an activated virtualenv, or `--break-system-packages`. Pin a release tag for reproducibility by appending `@v<X.Y.Z>` to the Git URL. If a `bmad-automator` is already installed, upgrade with `uv tool upgrade bmad-automator --reinstall` — the `--reinstall` is required for a Git source (a plain `uv tool upgrade` reuses the cached commit and won't pull new code); then re-run `bmad-auto init --force-skills` in each project so its skill copies refresh. Confirm with `bmad-auto --version`.
+     ```bash
+     uv tool install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
+     ```
+
+     Pin a release tag for reproducibility by appending `@v<X.Y.Z>` to the Git URL.
+
+   - **Upgrade** (uv already manages `bmad-automator`, per the "On Activation" decision):
+
+     1. Record the current version first so you can report the delta: `bmad-auto --version`.
+     2. Default — follow `main` (or the currently pinned tag):
+
+        ```bash
+        uv tool upgrade bmad-automator --reinstall
+        ```
+
+        The `--reinstall` is **required** for a Git source: a plain `uv tool upgrade` reuses the cached commit and won't pull new code. Then **offer to pin a release tag** for reproducibility — if the user wants a specific version, move to it with:
+
+        ```bash
+        uv tool install --force "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git@v<X.Y.Z>"
+        ```
+
+     3. Re-run `bmad-auto --version` and note the before → after for the confirmation step.
 
 3. **Bootstrap the project** — install the coding-CLI hooks, the bundled `bmad-auto-*` skills, the `.automator/policy.toml` template, and the gitignore entry (idempotent).
 
@@ -83,19 +112,24 @@ Unless the user explicitly asked to skip it (e.g. `skills only` / `--no-tool`), 
 
    > "Which coding CLI(s) should the orchestrator drive — `claude`, `codex`, and/or `gemini`? You can pick more than one. [claude]"
 
-   Build the command with one `--cli <name>` per selected CLI (the flag is repeatable):
+   Build the command with one `--cli <name>` per selected CLI (the flag is repeatable). **On an upgrade, append `--force-skills`** so the per-project skill copies are actually refreshed — without it `init` skips every existing skill dir and the project keeps stale skills against the upgraded tool. On a fresh install, omit it.
 
    ```bash
-   # claude only (default)
+   # fresh install, claude only (default)
    bmad-auto init --project "{project-root}" --cli claude
 
-   # multiple, e.g. claude + codex + gemini
+   # fresh install, multiple, e.g. claude + codex + gemini
    bmad-auto init --project "{project-root}" --cli claude --cli codex --cli gemini
+
+   # upgrade — refresh the bundled skills in place
+   bmad-auto init --project "{project-root}" --cli claude --force-skills
    ```
 
    Names must be exactly `claude`, `codex`, or `gemini` — `init` errors on an unknown profile and lists the valid ones. `init` prints any one-time first-run notes per CLI (e.g. start `claude` once in the project and accept the workspace-trust + hooks-approval dialogs before `bmad-auto run` — spawned sessions can't answer first-run dialogs). Relay those notes to the user.
 
-   **Skills are installed automatically:** `init` lays the bundled `bmad-auto-*` skills into the right tree for each selected CLI — `.claude/skills/` for `claude`, `.agents/skills/` for `codex`/`gemini`. Existing skill dirs are left untouched (re-run with `--force-skills` to overwrite, or `--no-skills` to skip the step and manage skills yourself).
+   **Skills are installed automatically:** `init` lays the bundled `bmad-auto-*` skills into the right tree for each selected CLI — `.claude/skills/` for `claude`, `.agents/skills/` for `codex`/`gemini`. On a fresh install, existing skill dirs are left untouched; on an upgrade, `--force-skills` overwrites them with the bundled copies from the upgraded tool (use `--no-skills` to skip the step and manage skills yourself).
+
+   > **Note:** `--force-skills` also overwrites `bmad-auto-setup` itself (it ships in the same bundle). That's expected and safe — the freshly laid-down setup skill takes effect on the **next** invocation, and your `_bmad/custom/*.toml` overrides (keyed by skill directory name) are untouched.
 
 4. **Preflight** — verify config, sprint-status, git, tmux, and the coding CLI:
 
@@ -133,7 +167,14 @@ Check `directories_removed` and `files_removed_count` in the JSON output for the
 
 ## Confirm
 
-Use the script JSON output to display what was written — config values set (written to `config.yaml` at root for core, module section for module values), user settings written to `config.user.yaml` (`user_keys` in result), help entries added, fresh install vs update. Also report the **tool install**: the installed `bmad-auto --version`, that `bmad-auto init` registered hooks, installed the `bmad-auto-*` skills, and wrote policy/gitignore for the selected coding CLI(s) (name each one — e.g. "hooks + skills installed for claude, codex"), and the `bmad-auto validate` preflight result (pass, or the readiness checklist of what's still missing). If legacy files were deleted, mention the migration. If legacy directories were removed, report the count and list (e.g. "Cleaned up 106 installer package files from bmb/, core/, \_config/ — skills are installed at .claude/skills/"). Then display the `module_greeting` from `./assets/module.yaml` to the user.
+Use the script JSON output to display what was written — config values set (written to `config.yaml` at root for core, module section for module values; the `bauto` section's `version` is re-stamped from `./assets/module.yaml` on every run via the anti-zombie merge), user settings written to `config.user.yaml` (`user_keys` in result), help entries added, fresh install vs upgrade.
+
+Report the **tool** result according to the branch taken:
+
+- **Fresh install:** the installed `bmad-auto --version`, that `bmad-auto init` registered hooks, installed the `bmad-auto-*` skills, and wrote policy/gitignore for the selected coding CLI(s) (name each one — e.g. "hooks + skills installed for claude, codex").
+- **Upgrade:** the before → after `bmad-auto --version` (e.g. "upgraded 0.3.1 → 0.3.2", or "already current at 0.3.2"), that the `bmad-auto-*` skills were **refreshed** (not skipped) with `--force-skills` in each CLI tree, and the re-stamped config version.
+
+Also report the `bmad-auto validate` preflight result (pass, or the readiness checklist of what's still missing). If legacy files were deleted, mention the migration. If legacy directories were removed, report the count and list (e.g. "Cleaned up 106 installer package files from bmb/, core/, \_config/ — skills are installed at .claude/skills/"). Then display the `module_greeting` from `./assets/module.yaml` to the user.
 
 ## Outcome
 

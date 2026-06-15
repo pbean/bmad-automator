@@ -31,17 +31,19 @@ After the installer runs, complete setup with one command:
 claude "/bmad-auto-setup accept all defaults"
 ```
 
-`/bmad-auto-setup` is one-shot. It:
+`/bmad-auto-setup` handles both first-time setup and later upgrades — re-run it any time. It:
 
 1. Merges the module's config into `_bmad/config.yaml` (+ personal settings into the
    gitignored `_bmad/config.user.yaml`) and registers its help entries in
    `_bmad/module-help.csv`.
-2. Installs the `bmad-automator` tool from Git (see
-   [Installing the tool and TUI](#installing-the-tool-and-tui)).
+2. Installs **or upgrades** the `bmad-automator` tool from Git (see
+   [Installing the tool and TUI](#installing-the-tool-and-tui)). On an upgrade it runs
+   `uv tool upgrade bmad-automator --reinstall`.
 3. Asks **which coding CLI(s)** the orchestrator should drive, then runs `bmad-auto init`
    to install the `bmad-auto-*` skills + register hooks + write the `.automator/policy.toml`
    template + add gitignore entries (see [Choosing which CLIs to drive](#choosing-which-clis-to-drive)
-   and [Initializing CLIs other than claude](#initializing-clis-other-than-claude)).
+   and [Initializing CLIs other than claude](#initializing-clis-other-than-claude)). On an
+   upgrade it passes `--force-skills` so the per-project skill copies are refreshed.
 4. Runs `bmad-auto validate` as a preflight (see [Verify](#verify)).
 5. Cleans up the legacy installer package directories under `_bmad/`, leaving only config.
 
@@ -121,7 +123,13 @@ failing obscurely.
 
 `uv tool install` drops `bmad-auto` into uv's own managed tool environment, so there's no
 PEP 668 externally-managed conflict and no need for a virtualenv, `--user`, or `--break-system-packages`.
-To update later, run `uv tool upgrade bmad-automator`.
+
+To upgrade later, the simplest path is to re-run `/bmad-auto-setup` (or `/bmad-auto-setup
+upgrade`) — it detects the existing install, upgrades the tool with `uv tool upgrade
+bmad-automator --reinstall` (the `--reinstall` is **required** for a git source — a plain
+`uv tool upgrade` reuses the cached commit and won't pull new code), and re-lays the
+per-project skills with `bmad-auto init --force-skills`. To do it by hand, run those two
+commands yourself (see the [Upgrading](../README.md#upgrading) section of the README).
 
 Confirm with `bmad-auto --version`.
 
