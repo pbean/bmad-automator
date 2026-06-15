@@ -38,7 +38,9 @@ lint:
 actions:
   disabled:
     - trunk-announce
-    - trunk-check-pre-push
     - trunk-fmt-pre-commit
   enabled:
     - trunk-upgrade-available
+    # Block a push when `trunk check` finds issues, so formatting/lint failures
+    # (e.g. prettier on CHANGELOG.md) surface locally instead of in CI.
+    - trunk-check-pre-push
