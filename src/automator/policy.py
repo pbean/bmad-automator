@@ -12,6 +12,10 @@ POLICY_FILE = Path(".automator") / "policy.toml"
 GATE_MODES = {"none", "per-epic", "per-story-spec-approval"}
 RETRO_MODES = {"never", "notify", "auto"}
 SWEEP_AUTO_MODES = {"never", "per-epic", "run-end"}
+ISOLATION_MODES = {"none", "worktree"}
+BRANCH_PER_MODES = {"story", "run"}
+MERGE_STRATEGIES = {"ff", "merge", "squash"}
+CI_MERGE_MODES = {"off", "watch", "auto"}
 
 
 class PolicyError(Exception):
@@ -116,6 +120,29 @@ class AdapterPolicy:
 
 
 @dataclass(frozen=True)
+class ScmPolicy:
+    # isolation = none  -> work happens in place on the checked-out branch
+    #                      (today's behavior; no branches, no merge-back).
+    # isolation = worktree -> each unit runs in its own git worktree/branch and
+    #                      merges back into target_branch locally (Phase 3).
+    isolation: str = "none"  # none | worktree
+    branch_per: str = "story"  # story | run (worktree mode only)
+    target_branch: str = ""  # "" = the branch checked out at run start
+    merge_strategy: str = "merge"  # ff | merge | squash
+    delete_branch: bool = True  # delete the unit branch after a successful merge
+    keep_failed: bool = True  # keep a failed unit's worktree+branch for inspection
+    # create_pr = True  -> open a GitHub PR into target_branch instead of merging
+    #                      locally (Phase 4). Degrades to a local merge when the
+    #                      repo has no remote or `gh` is absent.
+    create_pr: bool = False
+    # ci_merge governs what happens to the PR (create_pr only):
+    #   off   -> open the PR and leave it for a human (just journal the URL).
+    #   watch -> block on `gh pr checks --watch`; merge when green, escalate on red.
+    #   auto  -> enable GitHub auto-merge and move on (GitHub merges when green).
+    ci_merge: str = "off"
+
+
+@dataclass(frozen=True)
 class Policy:
     gates: GatesPolicy = field(default_factory=GatesPolicy)
     limits: LimitsPolicy = field(default_factory=LimitsPolicy)
@@ -124,6 +151,7 @@ class Policy:
     review: ReviewPolicy = field(default_factory=ReviewPolicy)
     adapter: AdapterPolicy = field(default_factory=AdapterPolicy)
     sweep: SweepPolicy = field(default_factory=SweepPolicy)
+    scm: ScmPolicy = field(default_factory=ScmPolicy)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,6 +200,7 @@ def loads(text: str) -> Policy:
     review_d = _section(doc, "review")
     adapter_d = _section(doc, "adapter")
     sweep_d = _section(doc, "sweep")
+    scm_d = _section(doc, "scm")
 
     gates = GatesPolicy(
         mode=str(gates_d.get("mode", GatesPolicy.mode)),
@@ -259,6 +288,35 @@ def loads(text: str) -> Policy:
             "sweep.max_bundles, sweep.max_triage_attempts, "
             "sweep.max_migration_attempts and sweep.max_cycles must be >= 1"
         )
+    scm = ScmPolicy(
+        isolation=str(scm_d.get("isolation", ScmPolicy.isolation)),
+        branch_per=str(scm_d.get("branch_per", ScmPolicy.branch_per)),
+        target_branch=str(scm_d.get("target_branch", ScmPolicy.target_branch)),
+        merge_strategy=str(scm_d.get("merge_strategy", ScmPolicy.merge_strategy)),
+        delete_branch=bool(scm_d.get("delete_branch", ScmPolicy.delete_branch)),
+        keep_failed=bool(scm_d.get("keep_failed", ScmPolicy.keep_failed)),
+        create_pr=bool(scm_d.get("create_pr", ScmPolicy.create_pr)),
+        ci_merge=str(scm_d.get("ci_merge", ScmPolicy.ci_merge)),
+    )
+    if scm.isolation not in ISOLATION_MODES:
+        raise PolicyError(
+            f"scm.isolation must be one of {sorted(ISOLATION_MODES)}: got {scm.isolation!r}"
+        )
+    if scm.branch_per not in BRANCH_PER_MODES:
+        raise PolicyError(
+            f"scm.branch_per must be one of {sorted(BRANCH_PER_MODES)}: got {scm.branch_per!r}"
+        )
+    if scm.merge_strategy not in MERGE_STRATEGIES:
+        raise PolicyError(
+            f"scm.merge_strategy must be one of {sorted(MERGE_STRATEGIES)}: "
+            f"got {scm.merge_strategy!r}"
+        )
+    if scm.ci_merge not in CI_MERGE_MODES:
+        raise PolicyError(
+            f"scm.ci_merge must be one of {sorted(CI_MERGE_MODES)}: got {scm.ci_merge!r}"
+        )
+    if scm.ci_merge != "off" and not scm.create_pr:
+        raise PolicyError("scm.ci_merge requires scm.create_pr = true")
     return Policy(
         gates=gates,
         limits=limits,
@@ -267,6 +325,7 @@ def loads(text: str) -> Policy:
         review=review,
         adapter=adapter,
         sweep=sweep,
+        scm=scm,
     )
 
 
@@ -328,4 +387,18 @@ max_triage_attempts = 2      # triage validation retries before escalating
 max_migration_attempts = 2   # legacy-ledger migration retries before escalating
 repeat = false               # after a cycle completes, re-triage and continue on newly deferred work
 max_cycles = 5               # safety cap on total cycles per sweep run when repeat = true
+
+[scm]
+# Source-control isolation + merge-back. Defaults reproduce today's behavior:
+# work happens in place on the checked-out branch, with no branches or PRs.
+isolation = "none"           # none | worktree
+branch_per = "story"         # story | run (worktree mode only)
+target_branch = ""           # "" = the branch checked out at run start
+merge_strategy = "merge"     # ff | merge | squash
+delete_branch = true         # delete the unit branch after a successful merge
+keep_failed = true           # keep a failed unit's worktree+branch for inspection
+# GitHub PR flow (worktree mode). Falls back to a local merge when the repo has
+# no remote or `gh` is not installed/authenticated.
+create_pr = false            # open a PR into target_branch instead of merging locally
+ci_merge = "off"             # off | watch | auto (requires create_pr; auto needs required checks configured)
 """

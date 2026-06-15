@@ -129,6 +129,14 @@ class StoryTask:
     # rendered intent file handed to dev sessions
     dw_ids: list[str] = field(default_factory=list)
     bundle_file: str | None = None
+    # worktree-isolation mode only (scm.isolation = "worktree"): the unit's
+    # mounted worktree dir and branch, recorded so a paused/crashed run can
+    # reconstruct or discard the in-flight worktree on resume.
+    worktree_path: str = ""
+    branch: str = ""
+    # worktree-isolation + create_pr mode only: the URL of the PR opened for this
+    # unit's branch (recorded so resume/inspection can find it).
+    pr_url: str = ""
     sessions: list[SessionRecord] = field(default_factory=list)
     tokens: TokenUsage = field(default_factory=TokenUsage)
 
@@ -154,6 +162,9 @@ class StoryTask:
             "defer_reason": self.defer_reason,
             "dw_ids": self.dw_ids,
             "bundle_file": self.bundle_file,
+            "worktree_path": self.worktree_path,
+            "branch": self.branch,
+            "pr_url": self.pr_url,
             "sessions": [s.to_dict() for s in self.sessions],
             "tokens": self.tokens.to_dict(),
         }
@@ -172,6 +183,9 @@ class StoryTask:
             defer_reason=d.get("defer_reason"),
             dw_ids=[str(i) for i in d.get("dw_ids", [])],
             bundle_file=d.get("bundle_file"),
+            worktree_path=str(d.get("worktree_path", "")),
+            branch=str(d.get("branch", "")),
+            pr_url=str(d.get("pr_url", "")),
             sessions=[SessionRecord.from_dict(s) for s in d.get("sessions", [])],
             tokens=TokenUsage.from_dict(d.get("tokens", {})),
         )
@@ -198,6 +212,10 @@ class RunState:
     # auto-sweep triggers already fired this run (e.g. "epic-1", "run-end");
     # guards re-fire on resume
     sweeps_triggered: list[str] = field(default_factory=list)
+    # worktree-isolation mode only: the branch every unit merges back into,
+    # resolved once at run start (default = the branch checked out then) and
+    # pinned so resume keeps targeting the same branch.
+    target_branch: str = ""
     tasks: dict[str, StoryTask] = field(default_factory=dict)
 
     @property
@@ -229,6 +247,7 @@ class RunState:
             "run_type": self.run_type,
             "sweep_cycle": self.sweep_cycle,
             "sweeps_triggered": self.sweeps_triggered,
+            "target_branch": self.target_branch,
             "tasks": {k: t.to_dict() for k, t in self.tasks.items()},
         }
 
@@ -248,5 +267,6 @@ class RunState:
             run_type=str(d.get("run_type", "story")),
             sweep_cycle=int(d.get("sweep_cycle", 1)),
             sweeps_triggered=[str(s) for s in d.get("sweeps_triggered", [])],
+            target_branch=str(d.get("target_branch", "")),
             tasks={k: StoryTask.from_dict(t) for k, t in d.get("tasks", {}).items()},
         )

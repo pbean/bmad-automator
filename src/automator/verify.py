@@ -142,12 +142,29 @@ def delete_branch(repo: Path, name: str, force: bool = False) -> None:
         raise GitError(f"git branch -d {name} failed in {repo}: {out}")
 
 
-def worktree_add(repo: Path, path: Path, branch: str, base: str) -> None:
-    """Create branch `branch` at `base` and check it out in a new worktree at
-    `path`. `path` must not already exist."""
-    rc, out = _git(repo, "worktree", "add", "-b", branch, str(path), base)
+def worktree_add(
+    repo: Path, path: Path, branch: str, base: str | None = None, *, create: bool = True
+) -> None:
+    """Check `branch` out in a new worktree at `path` (which must not exist).
+
+    create=True (default) cuts a fresh `branch` at `base`. create=False mounts an
+    existing `branch` (used to re-mount a shared run branch across serial units);
+    `base` is ignored. Either way the branch must not already be checked out in
+    another worktree — git refuses that.
+    """
+    if create:
+        rc, out = _git(repo, "worktree", "add", "-b", branch, str(path), base)
+    else:
+        rc, out = _git(repo, "worktree", "add", str(path), branch)
     if rc != 0:
         raise GitError(f"git worktree add {path} ({branch} from {base}) failed: {out}")
+
+
+def checkout_branch(repo: Path, name: str) -> None:
+    """Switch the repo's checkout to `name`. Requires a clean tree."""
+    rc, out = _git(repo, "checkout", name)
+    if rc != 0:
+        raise GitError(f"git checkout {name} failed in {repo}: {out}")
 
 
 def worktree_remove(repo: Path, path: Path, force: bool = False) -> None:

@@ -307,6 +307,78 @@ def test_sweep_nothing_open(project):
     assert "sweep-nothing-open" in journal_text(engine)
 
 
+def test_sweep_worktree_bundle_merges_to_target(project):
+    """A sweep bundle runs in its own worktree and merges back: the ledger
+    closes land on the target branch and the worktree is cleaned up."""
+    from conftest import _spec_baseline, write_spec
+
+    from automator.policy import ScmPolicy
+    from automator.verify import branch_exists, rev_parse_head, worktree_list
+
+    write_ledger(project, {"DW-1": "open"})  # committed → visible in the worktree
+    plan = triage_result(
+        ["DW-1"],
+        bundles=[{"name": "fix", "dw_ids": ["DW-1"], "intent": "fix it"}],
+    )
+
+    def wt_bundle_dev(spec):
+        cwd = spec.cwd
+        wt = project.rebased(cwd)
+        baseline = rev_parse_head(cwd)
+        src = cwd / "src.txt"
+        src.write_text(src.read_text() + "change for dw-fix\n")
+        sp = wt.implementation_artifacts / "spec-dw-fix.md"
+        final = "done" if spec.env.get("BMAD_AUTO_SKIP_REVIEW") == "1" else "in-review"
+        write_spec(sp, final, baseline)
+        deferredwork.mark_done(wt.deferred_work, "DW-1", "2026-06-11", "built in worktree")
+        return SessionResult(
+            status="completed",
+            result_json={
+                "workflow": "quick-dev",
+                "story_key": "dw-fix",
+                "spec_file": str(sp),
+                "baseline_commit": baseline,
+                "tasks_total": 1,
+                "tasks_done": 1,
+                "verification": [],
+                "escalations": [],
+                "dw_ids": ["DW-1"],
+            },
+        )
+
+    def wt_bundle_review(spec):
+        wt = project.rebased(spec.cwd)
+        sp = wt.implementation_artifacts / "spec-dw-fix.md"
+        write_spec(sp, "done", _spec_baseline(sp))
+        return SessionResult(
+            status="completed",
+            result_json={
+                "workflow": "code-review",
+                "clean": True,
+                "patched": 0,
+                "deferred": 0,
+                "dismissed": 0,
+                "escalations": [],
+            },
+        )
+
+    pol = Policy(gates=GatesPolicy(mode="none"), notify=QUIET, scm=ScmPolicy(isolation="worktree"))
+    engine, _ = make_sweep(
+        project, [triage_effect(plan), wt_bundle_dev, wt_bundle_review], policy=pol
+    )
+    summary = engine.run()
+
+    assert not summary.paused
+    assert engine.state.tasks["dw-fix"].phase == Phase.DONE
+    # the ledger close landed on the target branch (main, in the main repo)
+    assert ledger_entries(project)["DW-1"].status.startswith("done")
+    assert "change for dw-fix" in (project.project / "src.txt").read_text()
+    # worktree cleaned up, branch deleted
+    assert [p.resolve() for p in worktree_list(project.project)] == [project.project.resolve()]
+    assert not branch_exists(project.project, "automator/sweep-run/dw-fix")
+    assert worktree_clean(project.project)
+
+
 def test_sweep_happy_path(project):
     write_ledger(project, {"DW-1": "open", "DW-2": "open", "DW-3": "open"})
     plan = triage_result(

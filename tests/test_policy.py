@@ -228,12 +228,71 @@ def test_review_enabled_default_and_override(tmp_path):
     assert policy.load(p).review.enabled is False
 
 
+def test_scm_defaults_reproduce_today(tmp_path):
+    pol = policy.load(None)
+    assert pol.scm.isolation == "none"
+    assert pol.scm.branch_per == "story"
+    assert pol.scm.target_branch == ""
+    assert pol.scm.merge_strategy == "merge"
+    assert pol.scm.delete_branch is True
+    assert pol.scm.keep_failed is True
+    assert pol.scm.create_pr is False
+    assert pol.scm.ci_merge == "off"
+
+
+def test_scm_override(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text(
+        '[scm]\nisolation = "worktree"\nbranch_per = "run"\n'
+        'target_branch = "integration"\nmerge_strategy = "squash"\n'
+        "delete_branch = false\nkeep_failed = false\n"
+        'create_pr = true\nci_merge = "watch"\n'
+    )
+    pol = policy.load(p)
+    assert pol.scm.isolation == "worktree"
+    assert pol.scm.branch_per == "run"
+    assert pol.scm.target_branch == "integration"
+    assert pol.scm.merge_strategy == "squash"
+    assert pol.scm.delete_branch is False
+    assert pol.scm.keep_failed is False
+    assert pol.scm.create_pr is True
+    assert pol.scm.ci_merge == "watch"
+
+
+def test_scm_invalid_values(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text('[scm]\nisolation = "vm"\n')
+    with pytest.raises(policy.PolicyError, match="scm.isolation"):
+        policy.load(p)
+    p.write_text('[scm]\nbranch_per = "epic"\n')
+    with pytest.raises(policy.PolicyError, match="scm.branch_per"):
+        policy.load(p)
+    p.write_text('[scm]\nmerge_strategy = "rebase"\n')
+    with pytest.raises(policy.PolicyError, match="scm.merge_strategy"):
+        policy.load(p)
+    p.write_text('[scm]\nci_merge = "always"\n')
+    with pytest.raises(policy.PolicyError, match="scm.ci_merge"):
+        policy.load(p)
+
+
+def test_scm_ci_merge_requires_create_pr(tmp_path):
+    p = tmp_path / "policy.toml"
+    # ci_merge without create_pr is a misconfiguration: nothing opens a PR to watch.
+    p.write_text('[scm]\nci_merge = "watch"\n')
+    with pytest.raises(policy.PolicyError, match="ci_merge requires"):
+        policy.load(p)
+    # create_pr alone (ci_merge default off) is valid: open the PR, leave it.
+    p.write_text("[scm]\ncreate_pr = true\n")
+    assert policy.load(p).scm.create_pr is True
+
+
 def test_template_parses():
     import tomllib
 
     doc = tomllib.loads(policy.POLICY_TEMPLATE)
     assert doc["gates"]["mode"] == "per-epic"
     assert doc["review"]["enabled"] is True
+    assert doc["scm"]["isolation"] == "none"
 
 
 def test_to_dict_roundtrips_for_snapshot():

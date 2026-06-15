@@ -23,6 +23,7 @@ from .engine import Engine
 from .escalation import critical_escalations
 from .model import Phase, StoryTask
 from .statemachine import advance
+from .workspace import discard_worktree
 
 
 def _read_json(path: Path) -> Any:
@@ -488,9 +489,10 @@ class SweepEngine(Engine):
             self.journal.append("decision-preanswers-pruned", dw_ids=dropped)
             self._commit_ledger("chore(sweep): drop consumed deferred-work pre-answers")
 
-    def _run_story(self, task: StoryTask) -> None:
+    def _drive_story(self, task: StoryTask) -> None:
         # no spec-approval gate for bundles: the bundle intent came from the
-        # validated triage plan (and, for decision bundles, from the human)
+        # validated triage plan (and, for decision bundles, from the human).
+        # The base _run_story wraps this in a worktree when isolation=worktree.
         if self._dev_phase(task):
             self._review_and_commit(task)
 
@@ -512,11 +514,27 @@ class SweepEngine(Engine):
         else:
             # interrupted mid-bundle: same recovery as Engine._finish_inflight
             self.journal.append("resume-restart", story_key=key, phase=str(task.phase))
+            isolated = self._isolated and task.worktree_path
             if task.phase == Phase.DEV_VERIFY and task.spec_file:
                 self._save()
-                self._review_and_commit(task)
+                if isolated:
+                    unit = self._reopen_unit(task)
+                    prev = self.workspace
+                    self.workspace = unit.workspace
+                    try:
+                        self._review_and_commit(task)
+                    finally:
+                        self.workspace = prev
+                    self._integrate_unit(task, unit)
+                else:
+                    self._review_and_commit(task)
                 return
-            if task.baseline_commit:
+            if isolated:
+                # drop the half-built worktree; _run_story mounts a fresh one
+                discard_worktree(self.paths.repo_root, task.worktree_path, task.branch)
+                task.worktree_path = ""
+                task.branch = ""
+            elif task.baseline_commit:
                 self._reset_to(task.baseline_commit)
             task.phase = Phase.PENDING  # deliberate reset, not a normal transition
         dirname = bundle.name if cycle == 1 else f"c{cycle}-{bundle.name}"
