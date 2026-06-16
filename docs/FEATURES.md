@@ -22,6 +22,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 | Cost-weighted token budgets          | Per-story budget counts cache reads at ~0.1x; raw totals displayed                                                                      | Naive token caps misjudge real cost (cache reads dominate)                                |
 | Non-invasive skill forks             | Drives its own `bmad-auto-*` skill forks; reads `sprint-status.yaml` only                                                               | Modifying a user's standard BMAD install                                                  |
 | Read-only TUI + launcher             | Live dashboard over run-dir artifacts; launches detached runs                                                                           | No visibility into what an unattended run is doing                                        |
+| Git worktree isolation (opt-in)      | Each unit runs in its own worktree/branch, merging back into the target locally; failed units kept for inspection                       | A long unattended run mutating the working tree you're actively using                     |
 
 ---
 
@@ -57,6 +58,15 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - Plateau-defer: when review won't converge, the story is skipped, the spec stashed into the run dir, deferred-work preserved, the run continues.
 - Typed escalations: `CRITICAL` pauses the run + notifies (desktop + `ATTENTION` file); `PREFERENCE` is journaled and continues.
 - CRITICAL resolution: `bmad-auto resolve <run-id>` opens an interactive resolve agent seeded with the escalation + frozen spec; you disambiguate, it re-arms the story (`escalated → pending`, spec reset to `ready-for-dev`) and resumes. `--no-interactive` skips to re-arm if you fixed the spec yourself.
+
+### Git worktree isolation (opt-in)
+
+- Off by default (`[scm] isolation = "none"` — work in place on the checked-out branch, byte-for-byte the prior behavior). Set `isolation = "worktree"` and each story (and each sweep bundle) runs in its own `git worktree` on an `automator/<run_id>[/<story>]` branch cut from the target branch, then merges back **locally** — the main checkout stays free while a run is in flight.
+- Merge knobs: `merge_strategy` (`ff` / `merge` / `squash`), `target_branch` (default = branch checked out at run start; created if missing — a detached HEAD or unborn repo pauses the run instead of merging onto an unreferenced commit), `branch_per` (`story` or a shared `run` branch; `run` forces `delete_branch = false`), and `delete_branch`.
+- Failed-unit forensics: a deferred/escalated unit's worktree + branch stay mounted (`keep_failed`, default on) and its full diff is preserved to `run_dir/failed/<unit>/changes.patch`; `failed_diff_max_mb` caps per-file untracked-file size (oversized skipped with a marker), `failed_diff_unlimited` lifts the cap.
+- Run state never moves into a worktree — `.automator/` always lives in the main repo; spec paths are persisted relative to the worktree so a kept-failed run stays portable.
+- Merge-back is serialized; `max_parallel` is a validated knob clamped to `1` until parallel fan-out is built. The `repo_root` key in `_bmad/bmm/config.yaml` (defaults to the project dir) decouples where git/code work happens from where run state lives (monorepos).
+- `commit_message_template` (`{story_key}` / `{run_id}` substituted) customizes story/bundle commit messages.
 
 ### Resumability & state
 
@@ -98,7 +108,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 ### Configuration (`.automator/policy.toml`)
 
 - Single policy file written by `init`, snapshotted at run start (applies to new runs and resumes; editable live from the TUI).
-- Sections: `[gates]`, `[limits]`, `[verify]`, `[notify]`, `[review]`, `[adapter]` (+ per-stage), `[sweep]`.
+- Sections: `[gates]`, `[limits]`, `[verify]`, `[notify]`, `[review]`, `[adapter]` (+ per-stage), `[sweep]`, `[scm]` (worktree isolation + merge-back), `[tui]` (`low_frame_rate` for slow/SSH links).
 - Tunable limits: `max_review_cycles`, `max_dev_attempts`, `session_timeout_min`, `stop_without_result_nudges`, `max_tokens_per_story`.
 
 ### TUI dashboard
@@ -106,7 +116,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - Read-only observer + launcher (`bmad-auto tui`): runs table, expandable sprint tree (epics → stories/retro), severity-colored deferred-work ledger, per-story phase table (phase · dev attempts · review cycles · tokens · commit/defer), tabs tailing journal / pane log / `ATTENTION`.
 - Launch & manage from keys: start run/sweep (`r`/`s`), resume (`e`), resolve escalation (`R`), answer missed decisions (`d`), attach (`a`), cleanup (`c`), validate (`v`), settings editor (`g`), theme/mode toggle (`M`), quit (`q`).
 - Survives TUI exit/crash: runs launched from the TUI are detached `bmad-auto` processes in a dedicated `bmad-auto-ctl` tmux session; the dashboard watches purely via run-dir artifacts, so shell-started runs appear identically.
-- Comment-preserving policy editor (`g`): grouped form, validated with the engine's own parser, unset keys show defaults as placeholders.
+- Comment-preserving policy editor (`g`): grouped form, sections collapsed by default with one-line descriptions (`ctrl+e` toggles all), validated with the engine's own parser, unset keys show defaults as placeholders.
 
 ### tmux session management
 
@@ -132,5 +142,5 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - `bmad-auto status [<run-id>]` — run + sprint summary with per-story token totals.
 - `bmad-auto attach [<run-id>]` — tmux-attach to a run's live agent session.
 - `bmad-auto cleanup` — remove leftover tmux artifacts for finished/stopped runs.
-- `bmad-auto tui` — the interactive dashboard.
+- `bmad-auto tui` — the interactive dashboard (`--low-frame-rate` for slow/SSH links).
 - Every command takes `--project <dir>` (default: current directory).

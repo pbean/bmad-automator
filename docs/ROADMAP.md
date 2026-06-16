@@ -7,6 +7,26 @@ Status legend: **planned** (agreed, not started) · **exploring** (shape still o
 
 ---
 
+## Parallel unit execution (`[scm] max_parallel`)
+
+**Status:** planned · **Foundation:** landed with worktree isolation (v0.4.0)
+
+Worktree isolation (`[scm] isolation = "worktree"`) already gives each story/bundle its own
+worktree and branch, and the `max_parallel` knob is parsed and validated in
+`src/automator/policy.py` (`ScmPolicy`). But it is **clamped to `1` in `loads()`** — merge-back
+is serialized, one unit at a time — because the internal fan-out scheduler isn't built yet. The
+knob exists so the config surface is stable; it stays inert until this phase lands.
+
+The goal is to drive N units concurrently (each in its own worktree, independent tmux session),
+then serialize only the merge-back into the target branch. Then lifting the clamp activates the
+existing knob with no config change for users.
+
+**Open questions:** how to bound concurrent CLI sessions vs. token/cost budgets; merge-back
+ordering and conflict handling when several units finish close together; how the TUI surfaces
+multiple in-flight units per run.
+
+---
+
 ## Automate epic retro action items
 
 **Status:** planned · **Blocked-by:** retro-item detail isn't standardized yet

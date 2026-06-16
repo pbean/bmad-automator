@@ -17,6 +17,13 @@ bmad-auto tui              # or: bmad-auto tui --project /path/to/project
 `--project` defaults to the current directory. tmux must be on PATH for the
 launch/attach keys (`r` `s` `e` `a`); pure observation works without it.
 
+Over a slow or high-latency link (SSH, Tailscale), a 60fps update stream can't
+drain in time and partial frames paint over old ones. Launch with
+`bmad-auto tui --low-frame-rate` to cap Textual to 15fps and disable
+animations (sets `TEXTUAL_FPS` / `TEXTUAL_ANIMATIONS`), or make it permanent
+with `[tui] low_frame_rate = true` in `policy.toml` (editable from the settings
+screen). An explicit `TEXTUAL_FPS` in the environment still wins.
+
 ## Architecture: observer/launcher, never the engine
 
 The TUI never runs an engine in-process. The two halves:
@@ -205,8 +212,8 @@ Journal kinds are styled by substring, first match wins:
 | `M` | toggle theme (light/dark mode)                                             |
 | `q` | quit (running engines are unaffected)                                      |
 
-In the settings editor: `ctrl+s` saves, `escape` goes back without saving.
-In any modal: `escape` cancels.
+In the settings editor: `ctrl+s` saves, `ctrl+e` expands/collapses all
+sections, `escape` goes back without saving. In any modal: `escape` cancels.
 
 ## Starting runs and sweeps (`r` / `s`)
 
@@ -348,34 +355,49 @@ formatting — stays byte-identical. A missing policy file starts from the full
 inline-documented template. The note at the top is load-bearing: **running
 engines snapshot policy at start — changes apply to new runs and resumes.**
 
-The form is grouped by TOML section (per-stage adapter sections are collapsed
-while empty). Unset keys show their default as a placeholder rather than a
-baked-in value; clearing a field deletes the key, restoring default/inherit
+The form is grouped by TOML section. Every section starts **collapsed** with a
+one-line description in its header, so the grown-large form scans at a glance —
+expand only the section you want to edit, or press `ctrl+e` to toggle them all
+open/closed at once. Unset keys show their default as a placeholder rather than
+a baked-in value; clearing a field deletes the key, restoring default/inherit
 behavior.
 
-| Section.key                           | Type                   | Default          | Notes                                               |
-| ------------------------------------- | ---------------------- | ---------------- | --------------------------------------------------- |
-| `gates.mode`                          | select                 | `per-epic`       | `none` / `per-epic` / `per-story-spec-approval`     |
-| `gates.retrospective`                 | select                 | `notify`         | `never` / `notify` / `auto`                         |
-| `limits.max_review_cycles`            | int ≥ 1                | 3                | review loop bound before plateau-defer              |
-| `limits.max_dev_attempts`             | int ≥ 1                | 2                | dev retry budget                                    |
-| `limits.session_timeout_min`          | int ≥ 1                | 45               | per-session wall clock                              |
-| `limits.stop_without_result_nudges`   | int ≥ 0                | 1                | nudges when a session stops without result.json     |
-| `limits.max_tokens_per_story`         | int ≥ 1                | 2000000          | cost-weighted budget                                |
-| `limits.cache_read_weight`            | float 0.0–1.0          | 0.1              | cache-read weight in the budget; 1.0 = raw          |
-| `verify.commands`                     | one per line           | (none)           | test/lint commands run before commit                |
-| `notify.desktop`                      | switch                 | on               | desktop notifications                               |
-| `notify.file`                         | switch                 | on               | ATTENTION file logging                              |
-| `adapter.name`                        | text                   | `claude`         | CLI profile: `claude` / `codex` / `gemini` / custom |
-| `adapter.model`                       | text                   | (CLI default)    | model override                                      |
-| `adapter.extra_args`                  | override switch + args | profile defaults | see below                                           |
-| `adapter.cleanup_session_on_finish`   | switch                 | on               | kill the run's tmux session on finish; off keeps it |
-| `adapter.dev` / `.review` / `.triage` | text ×2 + args         | inherit          | per-stage `name` / `model` / `extra_args` overrides |
-| `sweep.auto`                          | select                 | `never`          | `never` / `per-epic` / `run-end`                    |
-| `sweep.max_bundles`                   | int ≥ 1                | 5                | bundles per sweep; triage excess truncated          |
-| `sweep.max_triage_attempts`           | int ≥ 1                | 2                | triage validation retries                           |
-| `sweep.repeat`                        | switch                 | off              | re-triage after each cycle, continue on new work    |
-| `sweep.max_cycles`                    | int ≥ 1                | 5                | cycle cap per sweep run when repeat is on           |
+| Section.key                           | Type                   | Default            | Notes                                                                                        |
+| ------------------------------------- | ---------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| `gates.mode`                          | select                 | `per-epic`         | `none` / `per-epic` / `per-story-spec-approval`                                              |
+| `gates.retrospective`                 | select                 | `notify`           | `never` / `notify` / `auto`                                                                  |
+| `limits.max_review_cycles`            | int ≥ 1                | 3                  | review loop bound before plateau-defer                                                       |
+| `limits.max_dev_attempts`             | int ≥ 1                | 2                  | dev retry budget                                                                             |
+| `limits.session_timeout_min`          | int ≥ 1                | 45                 | per-session wall clock                                                                       |
+| `limits.stop_without_result_nudges`   | int ≥ 0                | 1                  | nudges when a session stops without result.json                                              |
+| `limits.max_tokens_per_story`         | int ≥ 1                | 2000000            | cost-weighted budget                                                                         |
+| `limits.cache_read_weight`            | float 0.0–1.0          | 0.1                | cache-read weight in the budget; 1.0 = raw                                                   |
+| `verify.commands`                     | one per line           | (none)             | test/lint commands run before commit                                                         |
+| `notify.desktop`                      | switch                 | on                 | desktop notifications                                                                        |
+| `notify.file`                         | switch                 | on                 | ATTENTION file logging                                                                       |
+| `adapter.name`                        | text                   | `claude`           | CLI profile: `claude` / `codex` / `gemini` / custom                                          |
+| `adapter.model`                       | text                   | (CLI default)      | model override                                                                               |
+| `adapter.extra_args`                  | override switch + args | profile defaults   | see below                                                                                    |
+| `adapter.cleanup_session_on_finish`   | switch                 | on                 | kill the run's tmux session on finish; off keeps it                                          |
+| `adapter.dev` / `.review` / `.triage` | text ×2 + args         | inherit            | per-stage `name` / `model` / `extra_args` overrides                                          |
+| `sweep.auto`                          | select                 | `never`            | `never` / `per-epic` / `run-end`                                                             |
+| `sweep.max_bundles`                   | int ≥ 1                | 5                  | bundles per sweep; triage excess truncated                                                   |
+| `sweep.max_triage_attempts`           | int ≥ 1                | 2                  | triage validation retries                                                                    |
+| `sweep.repeat`                        | switch                 | off                | re-triage after each cycle, continue on new work                                             |
+| `sweep.max_cycles`                    | int ≥ 1                | 5                  | cycle cap per sweep run when repeat is on                                                    |
+| `scm.isolation`                       | select                 | `none`             | `none` (work in place) / `worktree` (per-unit worktree + merge-back)                         |
+| `scm.branch_per`                      | select                 | `story`            | worktree mode: branch per `story`, or one shared branch per `run` (forces delete-branch off) |
+| `scm.target_branch`                   | text                   | (run-start branch) | worktree mode: branch units merge back into (created if missing)                             |
+| `scm.merge_strategy`                  | select                 | `merge`            | worktree mode: `ff` / `merge` / `squash`                                                     |
+| `scm.delete_branch`                   | switch                 | on                 | worktree mode: delete the unit branch after a successful merge                               |
+| `scm.keep_failed`                     | switch                 | on                 | keep a failed unit's worktree + branch mounted for inspection                                |
+| `scm.commit_message_template`         | text                   | (built-in)         | story/bundle commit message; `{story_key}` / `{run_id}` substituted                          |
+| `scm.failed_diff_max_mb`              | int ≥ 1                | 5                  | per-file cap (MB) for untracked files in a kept-failed unit's `changes.patch`                |
+| `scm.failed_diff_unlimited`           | switch                 | off                | lift the failed-diff size cap (warns when active)                                            |
+| `tui.low_frame_rate`                  | switch                 | off                | cap to 15fps + disable animations (slow/SSH links); applies next launch                      |
+
+(`scm.max_parallel` is intentionally **not** exposed in the editor — it stays
+inert, clamped to 1, until parallel fan-out is built.)
 
 `extra_args` fields are special: the switch distinguishes "use the profile's
 default flags" (off — the key stays absent) from "replace them with exactly
@@ -389,22 +411,22 @@ buttons and block the save. The write itself is atomic (temp file +
 
 ## Troubleshooting
 
-| Message                                                                             | Cause / fix                                                                                                                        |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `tmux not found on PATH — launch/attach disabled`                                   | install tmux; the dashboard still works read-only                                                                                  |
-| `git worktree is not clean — commit or stash first`                                 | the launch guard; commit/stash and retry                                                                                           |
-| `another run is live: <ids>`                                                        | a second engine on the same project may conflict — confirm only if you know they won't touch the same stories                      |
-| `launch may have failed — attach to tmux session bmad-auto-ctl`                     | no `state.json` within 10 s of launch; attach to the ctl window to read the error (the window stays open with the exit code)       |
-| `no run selected`                                                                   | `e` / `a` need a selected run — the project has no runs yet                                                                        |
-| `state for run <id> is unreadable`                                                  | corrupt/missing `state.json`; inspect the run dir                                                                                  |
-| `run <id> already finished`                                                         | finished runs can't be resumed                                                                                                     |
-| `nothing to attach: no live agent session … runs started outside the TUI have none` | between sessions there is no agent window, and shell-started runs have no ctl window; wait for the next session or attach manually |
-| `cannot suspend here — run manually: tmux attach …`                                 | the terminal can't suspend the TUI; run the printed command in another terminal                                                    |
-| `engine.pid is still alive — resuming would double-drive this run`                  | the original engine still runs (or its pid was recycled); attach and check before resuming                                         |
-| `policy.toml is not valid TOML: …`                                                  | hand-edited file is syntactically broken; fix it in an editor — the settings screen needs a parseable document to start from       |
-| sprint tree shows `sprint status unavailable`                                       | missing/invalid `_bmad/bmm/config.yaml` or sprint-status.yaml; run `bmad-auto init` / `bmad-sprint-planning`                       |
-| deferred pane shows `deferred ledger unavailable`                                   | missing/unreadable `deferred-work.md`; normal until the first session defers something                                             |
-| header shows `state unavailable`                                                    | the run dir exists but `state.json` is missing or never parsed; usually transient at launch                                        |
+| Message                                                                             | Cause / fix                                                                                                                          |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `tmux not found on PATH — launch/attach disabled`                                   | install tmux; the dashboard still works read-only                                                                                    |
+| `git worktree is not clean — commit or stash first`                                 | the launch guard; commit/stash and retry. `.automator/policy.toml` is exempt, so saving in the settings editor never blocks a launch |
+| `another run is live: <ids>`                                                        | a second engine on the same project may conflict — confirm only if you know they won't touch the same stories                        |
+| `launch may have failed — attach to tmux session bmad-auto-ctl`                     | no `state.json` within 10 s of launch; attach to the ctl window to read the error (the window stays open with the exit code)         |
+| `no run selected`                                                                   | `e` / `a` need a selected run — the project has no runs yet                                                                          |
+| `state for run <id> is unreadable`                                                  | corrupt/missing `state.json`; inspect the run dir                                                                                    |
+| `run <id> already finished`                                                         | finished runs can't be resumed                                                                                                       |
+| `nothing to attach: no live agent session … runs started outside the TUI have none` | between sessions there is no agent window, and shell-started runs have no ctl window; wait for the next session or attach manually   |
+| `cannot suspend here — run manually: tmux attach …`                                 | the terminal can't suspend the TUI; run the printed command in another terminal                                                      |
+| `engine.pid is still alive — resuming would double-drive this run`                  | the original engine still runs (or its pid was recycled); attach and check before resuming                                           |
+| `policy.toml is not valid TOML: …`                                                  | hand-edited file is syntactically broken; fix it in an editor — the settings screen needs a parseable document to start from         |
+| sprint tree shows `sprint status unavailable`                                       | missing/invalid `_bmad/bmm/config.yaml` or sprint-status.yaml; run `bmad-auto init` / `bmad-sprint-planning`                         |
+| deferred pane shows `deferred ledger unavailable`                                   | missing/unreadable `deferred-work.md`; normal until the first session defers something                                               |
+| header shows `state unavailable`                                                    | the run dir exists but `state.json` is missing or never parsed; usually transient at launch                                          |
 
 Degradation is graceful by design: a mid-write or missing file never crashes a
 poll — the dashboard keeps the last good state (`?` / `unknown` where it has

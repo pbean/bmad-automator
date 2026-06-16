@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 
@@ -129,6 +130,11 @@ class StoryTask:
     # rendered intent file handed to dev sessions
     dw_ids: list[str] = field(default_factory=list)
     bundle_file: str | None = None
+    # worktree-isolation mode only (scm.isolation = "worktree"): the unit's
+    # mounted worktree dir and branch, recorded so a paused/crashed run can
+    # reconstruct or discard the in-flight worktree on resume.
+    worktree_path: str = ""
+    branch: str = ""
     sessions: list[SessionRecord] = field(default_factory=list)
     tokens: TokenUsage = field(default_factory=TokenUsage)
 
@@ -149,14 +155,28 @@ class StoryTask:
             "attempt": self.attempt,
             "review_cycle": self.review_cycle,
             "baseline_commit": self.baseline_commit,
-            "spec_file": self.spec_file,
+            "spec_file": self._serialized_spec_file(),
             "commit_sha": self.commit_sha,
             "defer_reason": self.defer_reason,
             "dw_ids": self.dw_ids,
             "bundle_file": self.bundle_file,
+            "worktree_path": self.worktree_path,
+            "branch": self.branch,
             "sessions": [s.to_dict() for s in self.sessions],
             "tokens": self.tokens.to_dict(),
         }
+
+    def _serialized_spec_file(self) -> str | None:
+        """In worktree mode the spec lives inside the unit's worktree; persist it
+        relative to the worktree root so a kept-failed run's state.json stays
+        portable if the worktree is later moved (and is never a dangling absolute
+        path into a since-pruned worktree). In-place mode stores it verbatim."""
+        if not self.spec_file or not self.worktree_path:
+            return self.spec_file
+        try:
+            return str(Path(self.spec_file).relative_to(self.worktree_path))
+        except ValueError:
+            return self.spec_file  # spec lives outside the worktree; keep absolute
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "StoryTask":
@@ -172,6 +192,8 @@ class StoryTask:
             defer_reason=d.get("defer_reason"),
             dw_ids=[str(i) for i in d.get("dw_ids", [])],
             bundle_file=d.get("bundle_file"),
+            worktree_path=str(d.get("worktree_path", "")),
+            branch=str(d.get("branch", "")),
             sessions=[SessionRecord.from_dict(s) for s in d.get("sessions", [])],
             tokens=TokenUsage.from_dict(d.get("tokens", {})),
         )
@@ -198,6 +220,10 @@ class RunState:
     # auto-sweep triggers already fired this run (e.g. "epic-1", "run-end");
     # guards re-fire on resume
     sweeps_triggered: list[str] = field(default_factory=list)
+    # worktree-isolation mode only: the branch every unit merges back into,
+    # resolved once at run start (default = the branch checked out then) and
+    # pinned so resume keeps targeting the same branch.
+    target_branch: str = ""
     tasks: dict[str, StoryTask] = field(default_factory=dict)
 
     @property
@@ -229,6 +255,7 @@ class RunState:
             "run_type": self.run_type,
             "sweep_cycle": self.sweep_cycle,
             "sweeps_triggered": self.sweeps_triggered,
+            "target_branch": self.target_branch,
             "tasks": {k: t.to_dict() for k, t in self.tasks.items()},
         }
 
@@ -248,5 +275,6 @@ class RunState:
             run_type=str(d.get("run_type", "story")),
             sweep_cycle=int(d.get("sweep_cycle", 1)),
             sweeps_triggered=[str(s) for s in d.get("sweeps_triggered", [])],
+            target_branch=str(d.get("target_branch", "")),
             tasks={k: StoryTask.from_dict(t) for k, t in d.get("tasks", {}).items()},
         )

@@ -39,6 +39,14 @@ from .runs import kill_session
 from .sprintstatus import load as load_sprint_status
 from .sprintstatus import next_actionable
 from .statemachine import advance
+from .workspace import (
+    WORKTREE_SUBDIR,
+    UnitWorkspace,
+    Workspace,
+    close_unit_workspace,
+    discard_worktree,
+    open_unit_workspace,
+)
 
 
 class RunPaused(Exception):
@@ -95,6 +103,9 @@ class Engine:
         sweep_factory: Callable[[str], None] | None = None,
     ):
         self.paths = paths
+        # where code+git work + artifact reads happen. isolation="none" (today's
+        # only mode) → the repo root in place; Phase 3 swaps in per-unit worktrees.
+        self.workspace = Workspace.default(paths)
         self.policy = policy
         self.adapters = {
             "dev": adapter,
@@ -120,8 +131,12 @@ class Engine:
         self._install_stop_signals()
         try:
             try:
+                # target-branch setup can raise RunPaused (detached HEAD, unborn
+                # repo), so it must sit inside the pause handler, not before it.
+                self._ensure_target_branch()
                 self._loop()
                 self.state.finished = True
+                self._gc_run_worktrees()
                 self.journal.append("run-complete")
                 # tear down the run's agent session now that it finished. Only
                 # the outermost engine owns this (nested auto-sweep never sets
@@ -192,6 +207,247 @@ class Engine:
             Engine._stop_signals_owner = None
         self._owns_signals = False
 
+    # ----------------------------------------------------- worktree isolation
+
+    @property
+    def _isolated(self) -> bool:
+        return self.policy.scm.isolation == "worktree"
+
+    def _ensure_target_branch(self) -> None:
+        """Resolve (once, at run start) the branch every unit merges back into.
+
+        No-op unless isolation=worktree. Default target is the branch checked out
+        now; a configured target is created if missing and checked out in the
+        main repo (merges land on whatever the main repo has checked out, and a
+        unit worktree must never check out the target itself). Pinned in state so
+        resume keeps targeting the same branch."""
+        if not self._isolated or self.state.target_branch:
+            return
+        if self.policy.scm.failed_diff_unlimited:
+            # the safety cap is off; make sure the operator knows a failed unit
+            # could write a very large forensic patch.
+            self.journal.append(
+                "scm-failed-diff-unlimited",
+                note="failed-unit diff capture is uncapped (scm.failed_diff_unlimited); "
+                "changes.patch may be very large",
+            )
+        repo = self.paths.repo_root
+        configured = self.policy.scm.target_branch.strip()
+        if configured:
+            if not verify.branch_exists(repo, configured):
+                try:
+                    verify.create_branch(repo, configured, "HEAD")
+                except verify.GitError as e:
+                    # e.g. an unborn repo (no commit to base a branch on).
+                    raise RunPaused(
+                        f"cannot create target branch {configured!r}: {e}",
+                        PAUSE_ESCALATION,
+                        "",
+                    ) from e
+                self.journal.append("target-branch-created", branch=configured)
+            if verify.current_branch(repo) != configured:
+                verify.checkout_branch(repo, configured)
+                self.journal.append("target-branch-checkout", branch=configured)
+            self.state.target_branch = configured
+        else:
+            current = verify.current_branch(repo)
+            if current == "HEAD":
+                # detached HEAD has no branch to merge into; merges would land on
+                # an unreferenced commit. Require a real branch (or a configured
+                # target) before isolating work into worktrees.
+                raise RunPaused(
+                    "isolation=worktree on a detached HEAD: check out a branch or "
+                    "set scm.target_branch before running",
+                    PAUSE_ESCALATION,
+                    "",
+                )
+            self.state.target_branch = current
+        self.journal.append("target-branch", branch=self.state.target_branch)
+        self._save()
+
+    def _run_isolated(self, task: StoryTask, drive: Callable[[StoryTask], None]) -> None:
+        """Run one unit's `drive` body in a fresh per-unit worktree, then merge
+        it back into the target branch. `drive` either returns (DONE/DEFERRED →
+        integrate) or raises RunPaused (spec-approval gate / escalation → leave
+        the worktree mounted for resume/inspection, integration skipped)."""
+        try:
+            unit = open_unit_workspace(
+                self.paths.repo_root,
+                self.paths,
+                self.state.run_id,
+                task.story_key,
+                self.state.target_branch,
+                self.policy.scm.branch_per,
+            )
+        except verify.GitError as e:
+            # could not mount a worktree (e.g. branch_per=run with a kept-failed
+            # unit still holding the shared branch). Defer this unit rather than
+            # crash the whole run; the operator can free the branch and re-run.
+            task.defer_reason = f"could not open worktree: {e}"
+            task.phase = Phase.DEFERRED  # deliberate: no legal move from PENDING
+            self.journal.append("worktree-open-failed", story_key=task.story_key, error=str(e))
+            gates.notify(
+                self.policy, self.run_dir, f"worktree open failed: {task.story_key}", str(e)
+            )
+            self._save()
+            return
+        task.worktree_path = str(unit.path)
+        task.branch = unit.branch
+        self.journal.append(
+            "worktree-opened", story_key=task.story_key, branch=unit.branch, path=str(unit.path)
+        )
+        self._save()
+        prev = self.workspace
+        self.workspace = unit.workspace
+        try:
+            drive(task)
+        finally:
+            self.workspace = prev
+        # reached only on a normal return (DONE or DEFERRED); a RunPaused from the
+        # spec gate or an escalation propagates past here, leaving the worktree up.
+        self._integrate_unit(task, unit)
+
+    def _failed_diff_max_bytes(self) -> int | None:
+        """Per-untracked-file size cap for a failed unit's forensic patch, in
+        bytes — or None when the operator lifted the cap (scm.failed_diff_unlimited)."""
+        scm = self.policy.scm
+        if scm.failed_diff_unlimited:
+            return None
+        return scm.failed_diff_max_mb * 1_048_576
+
+    def _integrate_unit(self, task: StoryTask, unit: UnitWorkspace) -> None:
+        scm = self.policy.scm
+        if task.phase == Phase.DONE:
+            # Merge the unit branch into the target branch locally. We open PRs
+            # ourselves by hand once the branch has landed; the orchestrator only
+            # commits the worktree onto the selected target.
+            self._merge_local(task, unit)
+        else:  # DEFERRED — capture the diff, keep or drop per keep_failed
+            patch = close_unit_workspace(
+                unit,
+                success=False,
+                keep_failed=scm.keep_failed,
+                run_dir=self.run_dir,
+                unit_key=task.story_key,
+                delete_branch=scm.delete_branch,
+                diff_max_file_bytes=self._failed_diff_max_bytes(),
+            )
+            self.journal.append(
+                "unit-closed",
+                story_key=task.story_key,
+                branch=unit.branch,
+                kept=scm.keep_failed,
+                patch=str(patch) if patch else None,
+            )
+
+    def _merge_local(self, task: StoryTask, unit: UnitWorkspace) -> None:
+        """Merge a DONE unit's branch into the target branch from the main repo."""
+        scm = self.policy.scm
+        try:
+            verify.merge_branch(
+                self.paths.repo_root,
+                unit.branch,
+                strategy=scm.merge_strategy,
+                message=self._merge_message(task),
+            )
+        except verify.GitError as e:
+            # conflict against the target: keep the branch for manual merge.
+            # The unit committed cleanly (phase is already DONE, which has no
+            # legal transition), so set ESCALATED directly rather than via
+            # advance(), then pause for the operator.
+            close_unit_workspace(
+                unit,
+                success=False,
+                keep_failed=True,
+                run_dir=self.run_dir,
+                unit_key=task.story_key,
+                delete_branch=False,
+                diff_max_file_bytes=self._failed_diff_max_bytes(),
+            )
+            reason = f"merge of {unit.branch} into {self.state.target_branch} failed: {e}"
+            self._escalate_unit(task, reason)  # always raises RunPaused
+            return  # defensive: never fall through to the success teardown below
+        self.journal.append(
+            "unit-merged",
+            story_key=task.story_key,
+            branch=unit.branch,
+            target=self.state.target_branch,
+        )
+        close_unit_workspace(
+            unit,
+            success=True,
+            keep_failed=scm.keep_failed,
+            run_dir=self.run_dir,
+            unit_key=task.story_key,
+            delete_branch=scm.delete_branch,
+        )
+
+    def _escalate_unit(self, task: StoryTask, reason: str) -> None:
+        """Mark a DONE unit ESCALATED, notify, and pause the run. DONE has no
+        legal transition, so the phase is set directly rather than via advance()."""
+        task.phase = Phase.ESCALATED
+        self.journal.append("story-escalated", story_key=task.story_key, reason=reason)
+        gates.notify(
+            self.policy,
+            self.run_dir,
+            f"CRITICAL escalation: {task.story_key}",
+            f"{reason} — resolve, then `bmad-auto resume {self.state.run_id}`",
+        )
+        self._save()
+        raise RunPaused(reason, PAUSE_ESCALATION, task.story_key)
+
+    def _merge_message(self, task: StoryTask) -> str:
+        return f"Merge {task.branch} into {self.state.target_branch} (bmad-auto)"
+
+    def _gc_run_worktrees(self) -> None:
+        """Reclaim this run's worktree scaffolding once it finishes cleanly.
+
+        DONE units drop their worktree at merge time; this is a safety net for a
+        worktree leaked by a crash between merge and teardown, plus it prunes
+        stale git admin entries and removes the now-empty run worktree dir.
+        Worktrees deliberately kept for inspection (a kept-failed/escalated unit)
+        are left in place and journaled so the operator can find them."""
+        if not self._isolated:
+            return
+        repo = self.paths.repo_root
+        for task in self.state.tasks.values():
+            if task.phase == Phase.DONE and task.worktree_path:
+                wt = Path(task.worktree_path)
+                if wt.is_dir():
+                    discard_worktree(repo, task.worktree_path, task.branch)
+            elif task.terminal and task.worktree_path and Path(task.worktree_path).is_dir():
+                # kept on purpose (keep_failed): leave it, but surface where.
+                self.journal.append(
+                    "worktree-kept", story_key=task.story_key, path=task.worktree_path
+                )
+        verify.worktree_prune(repo)
+        run_dir = repo / WORKTREE_SUBDIR / self.state.run_id
+        if run_dir.is_dir() and not any(run_dir.iterdir()):
+            run_dir.rmdir()
+
+    def _reopen_unit(self, task: StoryTask) -> UnitWorkspace:
+        """Reconstruct the UnitWorkspace for an in-flight unit on resume, from
+        the worktree path + branch persisted on the task. The worktree must still
+        be mounted — if it was pruned out from under us we cannot safely reuse it,
+        so escalate rather than run a session in a missing directory."""
+        wt = Path(task.worktree_path)
+        if not wt.is_dir():
+            self._escalate_unit(
+                task,
+                f"worktree for {task.story_key} is gone ({wt}); cannot resume in place",
+            )
+        # spec_file is persisted relative to the worktree (model.to_dict) so the
+        # state stays portable; re-absolutize it against the reopened worktree.
+        if task.spec_file and not Path(task.spec_file).is_absolute():
+            task.spec_file = str(wt / task.spec_file)
+        return UnitWorkspace(
+            workspace=Workspace(root=wt, paths=self.paths.rebased(wt)),
+            repo_root=self.paths.repo_root,
+            branch=task.branch,
+            path=wt,
+            baseline=task.baseline_commit or "",
+        )
+
     def summary(self) -> RunSummary:
         tasks = self.state.tasks.values()
         return RunSummary(
@@ -248,29 +504,45 @@ class Engine:
         must never eat them)."""
         keep = [".automator"]
         for artifact_dir in (
-            self.paths.implementation_artifacts,
-            self.paths.planning_artifacts,
+            self.workspace.paths.implementation_artifacts,
+            self.workspace.paths.planning_artifacts,
         ):
             try:
-                keep.append(str(artifact_dir.relative_to(self.paths.project)))
+                keep.append(str(artifact_dir.relative_to(self.workspace.root)))
             except ValueError:
                 pass  # artifacts configured outside the repo; nothing to protect
-        verify.reset_hard(self.paths.project, baseline, keep=tuple(keep))
+        verify.reset_hard(self.workspace.root, baseline, keep=tuple(keep))
 
     def _finish_inflight(self) -> None:
         """Complete or roll back tasks interrupted by a pause or crash."""
         for task in list(self.state.tasks.values()):
             if task.terminal:
                 continue
+            isolated = self._isolated and task.worktree_path
             if task.phase == Phase.DEV_VERIFY and task.spec_file:
                 # paused at the spec-approval gate: dev verified, review pending
                 self.journal.append("resume-review", story_key=task.story_key)
-                self._review_and_commit(task)
+                if isolated:
+                    unit = self._reopen_unit(task)
+                    prev = self.workspace
+                    self.workspace = unit.workspace
+                    try:
+                        self._review_and_commit(task)
+                    finally:
+                        self.workspace = prev
+                    self._integrate_unit(task, unit)
+                else:
+                    self._review_and_commit(task)
             else:
                 self.journal.append(
                     "resume-restart", story_key=task.story_key, phase=str(task.phase)
                 )
-                if task.baseline_commit:
+                if isolated:
+                    # drop the half-built worktree; _run_story mounts a fresh one
+                    discard_worktree(self.paths.repo_root, task.worktree_path, task.branch)
+                    task.worktree_path = ""
+                    task.branch = ""
+                elif task.baseline_commit:
                     self._reset_to(task.baseline_commit)
                 task.phase = Phase.PENDING  # deliberate reset, not a normal transition
                 self._save()
@@ -279,6 +551,12 @@ class Engine:
     # ------------------------------------------------------------- per story
 
     def _run_story(self, task: StoryTask) -> None:
+        if self._isolated:
+            self._run_isolated(task, self._drive_story)
+        else:
+            self._drive_story(task)
+
+    def _drive_story(self, task: StoryTask) -> None:
         if not self._dev_phase(task):
             return
         if gates.pause_after_spec(self.policy):
@@ -296,7 +574,7 @@ class Engine:
         self._review_and_commit(task)
 
     def _dev_phase(self, task: StoryTask) -> bool:
-        task.baseline_commit = verify.rev_parse_head(self.paths.project)
+        task.baseline_commit = verify.rev_parse_head(self.workspace.root)
         feedback: Path | None = None
         while True:
             task.attempt += 1
@@ -315,7 +593,7 @@ class Engine:
                 if outcome.ok:
                     # deterministic gates run here too: a broken build must not
                     # reach the (far more expensive) review loop
-                    outcome = verify.verify_commands_outcome(self.policy, self.paths.project)
+                    outcome = verify.verify_commands_outcome(self.policy, self.workspace.root)
             decision = decide_dev(task, result, outcome, self.policy)
             self.journal.append(
                 "dev-decision",
@@ -427,7 +705,7 @@ class Engine:
         advance(task, Phase.COMMITTING)
         self._save()
         try:
-            task.commit_sha = verify.commit_story(self.paths.project, self._commit_message(task))
+            task.commit_sha = verify.commit_story(self.workspace.root, self._commit_message(task))
         except verify.GitError as e:
             self._escalate(task, f"commit failed: {e}")
         advance(task, Phase.DONE)
@@ -448,16 +726,32 @@ class Engine:
 
     def _verify_dev_artifacts(self, task: StoryTask, result_json: dict | None):
         return verify.verify_dev(
-            task, self.paths, result_json, review_enabled=self.policy.review.enabled
+            task, self.workspace.paths, result_json, review_enabled=self.policy.review.enabled
         )
 
     def _verify_review(self, task: StoryTask):
-        return verify.verify_review(task, self.paths, self.policy)
+        return verify.verify_review(task, self.workspace.paths, self.policy)
 
     def _review_prompt(self, task: StoryTask) -> str:
         return f"/bmad-auto-review {task.spec_file}"
 
+    def _render_commit_template(self, task: StoryTask) -> str | None:
+        """The configured commit message template with {story_key}/{run_id}
+        substituted, or None when no template is set. Used by both the story and
+        sweep-bundle commit paths so a filled-out template wins everywhere."""
+        template = self.policy.scm.commit_message_template.strip()
+        if not template:
+            return None
+        # literal substitution (not str.format) so stray braces in the
+        # template — e.g. a JSON trailer — don't raise.
+        return template.replace("{story_key}", task.story_key).replace(
+            "{run_id}", self.state.run_id
+        )
+
     def _commit_message(self, task: StoryTask) -> str:
+        rendered = self._render_commit_template(task)
+        if rendered is not None:
+            return rendered
         if self.policy.review.enabled:
             return f"story {task.story_key}: implemented and reviewed via bmad-auto"
         return f"story {task.story_key}: implemented via bmad-auto"
@@ -482,7 +776,7 @@ class Engine:
             task_id=task_id,
             role=role,
             prompt=prompt,
-            cwd=self.paths.project,
+            cwd=self.workspace.root,
             env=env,
             model=cfg.model,
             timeout_s=self.policy.limits.session_timeout_min * 60,
@@ -552,7 +846,7 @@ class Engine:
                 self._escalate(task, f"CRITICAL escalation from fix session: {details}")
             outcome = None
             if result.status == "completed":
-                outcome = verify.verify_commands_outcome(self.policy, self.paths.project)
+                outcome = verify.verify_commands_outcome(self.policy, self.workspace.root)
                 if not outcome.ok:
                     reason = outcome.reason
             ok = outcome is not None and outcome.ok
@@ -571,9 +865,17 @@ class Engine:
     def _defer(self, task: StoryTask, reason: str) -> None:
         task.defer_reason = reason
         advance(task, Phase.DEFERRED)
+        if self._isolated:
+            # the failed work lives in the unit's worktree; the diff is captured
+            # and the worktree kept/dropped by _integrate_unit. Don't touch the
+            # tree here (no reset into the main repo — there's nothing to undo).
+            self.journal.append("story-deferred", story_key=task.story_key, reason=reason)
+            gates.notify(self.policy, self.run_dir, f"story deferred: {task.story_key}", reason)
+            self._save()
+            return
         if task.baseline_commit:
             self._stash_deferred_artifacts(task)
-            deferred_work = self.paths.deferred_work
+            deferred_work = self.workspace.paths.deferred_work
             snapshot = (
                 deferred_work.read_text(encoding="utf-8") if deferred_work.is_file() else None
             )
@@ -637,7 +939,7 @@ class Engine:
         self.state.sweeps_triggered.append(trigger)
         self._save()
         try:
-            clean = verify.worktree_clean(self.paths.project)
+            clean = verify.worktree_clean(self.workspace.root)
         except verify.GitError:
             clean = False
         if not clean:

@@ -17,11 +17,14 @@ import yaml
 from . import deferredwork
 from .bmadconfig import ProjectPaths
 from .model import StoryTask
-from .policy import Policy
+from .policy import POLICY_FILE, Policy
 from .sprintstatus import story_status
 
 GIT_TIMEOUT_S = 120
 COMMAND_TIMEOUT_S = 30 * 60
+
+# Repo-relative posix path of the orchestrator config, for git pathspecs.
+POLICY_FILE_REL = POLICY_FILE.as_posix()
 
 
 class GitError(Exception):
@@ -72,7 +75,12 @@ def rev_parse_head(repo: Path) -> str:
 
 
 def worktree_clean(repo: Path) -> bool:
-    rc, out = _git(repo, "status", "--porcelain")
+    # The orchestrator's own config file (.automator/policy.toml) is excluded:
+    # the TUI settings editor rewrites it, and a tracked config edit must not
+    # count as a "dirty tree" that blocks run/sweep/validate or forces a commit.
+    # Scope is policy.toml only — the deferred-work ledger also lives under
+    # .automator/ and is meant to be committed (see sweep._commit_ledger).
+    rc, out = _git(repo, "status", "--porcelain", "--", ".", f":(exclude){POLICY_FILE_REL}")
     if rc != 0:
         raise GitError(f"git status failed in {repo}: {out}")
     return out == ""
@@ -105,6 +113,197 @@ def reset_hard(repo: Path, baseline: str, keep: tuple[str, ...] = (".automator",
     rc, out = _git(repo, *clean_args)
     if rc != 0:
         raise GitError(f"git clean failed: {out}")
+
+
+# --------------------------------------------------------------------------
+# git worktree / branch / merge / diff primitives (Phase 2)
+#
+# Low-level helpers for the worktree-isolation pipeline. Each raises GitError
+# on failure. No engine wiring yet — these are unit-tested in isolation and
+# wired into open/close_unit_workspace + merge-back in Phase 3.
+# --------------------------------------------------------------------------
+
+
+def current_branch(repo: Path) -> str:
+    """The branch name HEAD points at, or "HEAD" when detached."""
+    rc, out = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0:
+        raise GitError(f"git rev-parse --abbrev-ref HEAD failed in {repo}: {out}")
+    return out
+
+
+def branch_exists(repo: Path, name: str) -> bool:
+    rc, _ = _git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}")
+    return rc == 0
+
+
+def create_branch(repo: Path, name: str, base: str) -> None:
+    """Create branch `name` at `base` without checking it out."""
+    rc, out = _git(repo, "branch", name, base)
+    if rc != 0:
+        raise GitError(f"git branch {name} {base} failed in {repo}: {out}")
+
+
+def delete_branch(repo: Path, name: str, force: bool = False) -> None:
+    rc, out = _git(repo, "branch", "-D" if force else "-d", name)
+    if rc != 0:
+        raise GitError(f"git branch -d {name} failed in {repo}: {out}")
+
+
+def worktree_add(
+    repo: Path, path: Path, branch: str, base: str | None = None, *, create: bool = True
+) -> None:
+    """Check `branch` out in a new worktree at `path` (which must not exist).
+
+    create=True (default) cuts a fresh `branch` at `base`. create=False mounts an
+    existing `branch` (used to re-mount a shared run branch across serial units);
+    `base` is ignored. Either way the branch must not already be checked out in
+    another worktree — git refuses that.
+    """
+    if create:
+        rc, out = _git(repo, "worktree", "add", "-b", branch, str(path), base)
+    else:
+        rc, out = _git(repo, "worktree", "add", str(path), branch)
+    if rc != 0:
+        raise GitError(f"git worktree add {path} ({branch} from {base}) failed: {out}")
+
+
+def checkout_branch(repo: Path, name: str) -> None:
+    """Switch the repo's checkout to `name`. Requires a clean tree."""
+    rc, out = _git(repo, "checkout", name)
+    if rc != 0:
+        raise GitError(f"git checkout {name} failed in {repo}: {out}")
+
+
+def worktree_remove(repo: Path, path: Path, force: bool = False) -> None:
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    rc, out = _git(repo, *args)
+    if rc != 0:
+        raise GitError(f"git worktree remove {path} failed: {out}")
+
+
+def worktree_prune(repo: Path) -> None:
+    """Drop administrative entries for worktrees whose directories are gone.
+    Best-effort housekeeping — never raises."""
+    _git(repo, "worktree", "prune")
+
+
+def worktree_list(repo: Path) -> list[Path]:
+    """Paths of every worktree attached to `repo` (the main checkout first)."""
+    rc, out = _git(repo, "worktree", "list", "--porcelain")
+    if rc != 0:
+        raise GitError(f"git worktree list failed in {repo}: {out}")
+    paths = []
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            paths.append(Path(line[len("worktree ") :]))
+    return paths
+
+
+def merge_branch(
+    repo: Path, branch: str, *, strategy: str = "merge", message: str | None = None
+) -> None:
+    """Merge `branch` into the branch currently checked out in `repo`.
+
+    strategy: "ff" (fast-forward only), "merge" (always a merge commit), or
+    "squash" (collapse to one commit). Raises GitError on conflict or when an
+    ff-only merge can't fast-forward, restoring the tree to its pre-merge state.
+    Assumes the target checkout is clean (the worktree pipeline guarantees it).
+    """
+    if strategy == "ff":
+        rc, out = _git(repo, "merge", "--ff-only", branch)
+        if rc != 0:
+            raise GitError(f"git merge --ff-only {branch} failed in {repo}: {out}")
+        return
+    if strategy == "merge":
+        msg = message or f"Merge branch '{branch}'"
+        rc, out = _git(repo, "merge", "--no-ff", "-m", msg, branch)
+        if rc != 0:
+            abort_rc, abort_out = _git(repo, "merge", "--abort")  # restore to pre-merge HEAD
+            detail = f"git merge --no-ff {branch} failed in {repo} (conflict?): {out}"
+            if abort_rc != 0:
+                detail += f"; AND git merge --abort failed (repo left mid-merge): {abort_out}"
+            raise GitError(detail)
+        return
+    if strategy == "squash":
+        rc, out = _git(repo, "merge", "--squash", branch)
+        if rc != 0:
+            # squash leaves no MERGE_HEAD to --abort; reset the conflicted index
+            # back to the (clean) target HEAD.
+            reset_rc, reset_out = _git(repo, "reset", "--hard", "HEAD")
+            detail = f"git merge --squash {branch} failed in {repo} (conflict?): {out}"
+            if reset_rc != 0:
+                detail += f"; AND git reset --hard HEAD failed (tree not restored): {reset_out}"
+            raise GitError(detail)
+        msg = message or f"Squash-merge branch '{branch}'"
+        rc, out = _git(repo, "commit", "-m", msg)
+        if rc != 0:
+            raise GitError(f"git commit (squash {branch}) failed in {repo}: {out}")
+        return
+    raise GitError(f"unknown merge strategy: {strategy!r}")
+
+
+def capture_diff(repo: Path, baseline: str, *, max_file_bytes: int | None = None) -> str:
+    """Full unified diff of `repo`'s working tree against `baseline`, including
+    untracked (but not ignored) files. Used to preserve a failed unit's changes
+    for forensics. Returns "" when there is nothing to capture.
+
+    Unlike `_git`, the tracked diff is read from stdout alone and left verbatim
+    (no strip, no stderr merge) so the patch stays applyable.
+
+    max_file_bytes caps the size of each *untracked* file included: a file larger
+    than the cap is skipped and replaced with a one-line marker naming it and its
+    size, so a stray build dir or huge log can't balloon the patch. None lifts the
+    cap (capture everything regardless of size).
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff", baseline, "--"],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
+    )
+    if proc.returncode != 0:
+        raise GitError(f"git diff {baseline} failed in {repo}: {proc.stderr.strip()}")
+    parts = [proc.stdout]
+
+    rc, out = _git(repo, "ls-files", "--others", "--exclude-standard")
+    if rc != 0:
+        raise GitError(f"git ls-files --others failed in {repo}: {out}")
+    for rel in out.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        if max_file_bytes is not None:
+            try:
+                size = (repo / rel).stat().st_size
+            except OSError:
+                size = 0
+            if size > max_file_bytes:
+                parts.append(
+                    f"# bmad-auto: skipped untracked file {rel!r} — "
+                    f"{size / 1_048_576:.1f} MB exceeds the {max_file_bytes / 1_048_576:.1f} MB "
+                    "cap (raise scm.failed_diff_max_mb or set scm.failed_diff_unlimited = true)\n"
+                )
+                continue
+        # --no-index synthesizes an add-from-/dev/null diff for the untracked
+        # file; it exits 1 precisely because the files differ — expected here.
+        # Any other non-zero code is a real failure (bad path, internal error),
+        # not "files differ", so don't silently fold it into the patch.
+        u = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--no-index", "--", "/dev/null", rel],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+        )
+        if u.returncode not in (0, 1):
+            raise GitError(
+                f"git diff --no-index for untracked {rel!r} failed in {repo}: {u.stderr.strip()}"
+            )
+        parts.append(u.stdout)
+    return "".join(parts)
 
 
 def read_frontmatter(path: Path) -> dict[str, Any]:

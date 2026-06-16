@@ -23,6 +23,7 @@ from .engine import Engine
 from .escalation import critical_escalations
 from .model import Phase, StoryTask
 from .statemachine import advance
+from .workspace import discard_worktree
 
 
 def _read_json(path: Path) -> Any:
@@ -404,7 +405,7 @@ class SweepEngine(Engine):
     # ------------------------------------------------------------ main loop
 
     def _loop(self) -> None:
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         cycle = max(1, self.state.sweep_cycle)
         while True:
             self.state.sweep_cycle = cycle
@@ -479,16 +480,19 @@ class SweepEngine(Engine):
         keep-open answer's audit line) on the next sweep."""
         from . import decisions as decisions_store  # lazy: decisions imports sweep
 
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         text = ledger.read_text(encoding="utf-8") if ledger.is_file() else ""
-        dropped = decisions_store.prune_pre_answers(self.paths.project, deferredwork.open_ids(text))
+        dropped = decisions_store.prune_pre_answers(
+            self.workspace.root, deferredwork.open_ids(text)
+        )
         if dropped:
             self.journal.append("decision-preanswers-pruned", dw_ids=dropped)
             self._commit_ledger("chore(sweep): drop consumed deferred-work pre-answers")
 
-    def _run_story(self, task: StoryTask) -> None:
+    def _drive_story(self, task: StoryTask) -> None:
         # no spec-approval gate for bundles: the bundle intent came from the
-        # validated triage plan (and, for decision bundles, from the human)
+        # validated triage plan (and, for decision bundles, from the human).
+        # The base _run_story wraps this in a worktree when isolation=worktree.
         if self._dev_phase(task):
             self._review_and_commit(task)
 
@@ -510,11 +514,27 @@ class SweepEngine(Engine):
         else:
             # interrupted mid-bundle: same recovery as Engine._finish_inflight
             self.journal.append("resume-restart", story_key=key, phase=str(task.phase))
+            isolated = self._isolated and task.worktree_path
             if task.phase == Phase.DEV_VERIFY and task.spec_file:
                 self._save()
-                self._review_and_commit(task)
+                if isolated:
+                    unit = self._reopen_unit(task)
+                    prev = self.workspace
+                    self.workspace = unit.workspace
+                    try:
+                        self._review_and_commit(task)
+                    finally:
+                        self.workspace = prev
+                    self._integrate_unit(task, unit)
+                else:
+                    self._review_and_commit(task)
                 return
-            if task.baseline_commit:
+            if isolated:
+                # drop the half-built worktree; _run_story mounts a fresh one
+                discard_worktree(self.paths.repo_root, task.worktree_path, task.branch)
+                task.worktree_path = ""
+                task.branch = ""
+            elif task.baseline_commit:
                 self._reset_to(task.baseline_commit)
             task.phase = Phase.PENDING  # deliberate reset, not a normal transition
         dirname = bundle.name if cycle == 1 else f"c{cycle}-{bundle.name}"
@@ -531,7 +551,7 @@ class SweepEngine(Engine):
         orchestrator pins exactly what to convert (a manifest from
         parse_legacy), validates the rewrite deterministically, and restores
         the original ledger before any retry."""
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         task = self.state.tasks.get(MIGRATE_KEY)
         if task is None:
             task = StoryTask(story_key=MIGRATE_KEY, epic=0)
@@ -541,12 +561,12 @@ class SweepEngine(Engine):
             self.journal.append("resume-restart", story_key=MIGRATE_KEY, phase=str(task.phase))
             if task.phase == Phase.ESCALATED:
                 task.attempt = 0  # the human resumed deliberately; fresh budget
-            if task.baseline_commit and not verify.worktree_clean(self.paths.project):
+            if task.baseline_commit and not verify.worktree_clean(self.workspace.root):
                 self._reset_to(task.baseline_commit)  # a session died mid-rewrite
                 text = ledger.read_text(encoding="utf-8") if ledger.is_file() else ""
             task.phase = Phase.PENDING  # deliberate reset, not a normal transition
         if not task.baseline_commit:
-            task.baseline_commit = verify.rev_parse_head(self.paths.project)
+            task.baseline_commit = verify.rev_parse_head(self.workspace.root)
 
         legacy = deferredwork.parse_legacy(text)
         pre_canonical = {e.id: e.status for e in deferredwork.parse_ledger(text)}
@@ -714,7 +734,7 @@ class SweepEngine(Engine):
     # ------------------------------------------------------ ledger phases
 
     def _close_resolved(self, plan: TriagePlan) -> int:
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         closed = []
         for entry in plan.already_resolved:
             if deferredwork.mark_done(
@@ -738,7 +758,7 @@ class SweepEngine(Engine):
         # unattended/abandoned sweep left). The ledger edits were already applied
         # when they answered, so here we only take the answer onboard — this run
         # won't re-prompt/re-skip and build answers materialize into bundles.
-        pre = decisions_store.load_pre_answers(self.paths.project)
+        pre = decisions_store.load_pre_answers(self.workspace.root)
         seeded = False
         for decision in plan.decisions:
             if decision.id in answers or decision.id not in pre:
@@ -803,7 +823,7 @@ class SweepEngine(Engine):
         return answers, closed
 
     def _apply_decision_effect(self, decision: Decision, option: DecisionOption) -> None:
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         detail = option.resolution or option.intent
         deferredwork.append_decision(ledger, decision.id, self._today(), option.label, detail)
         if option.effect == "close":
@@ -815,9 +835,9 @@ class SweepEngine(Engine):
     def _commit_ledger(self, message: str) -> None:
         """Commit pending orchestrator ledger edits; bundles need a clean
         baseline. No-op when the tree is already clean."""
-        if verify.worktree_clean(self.paths.project):
+        if verify.worktree_clean(self.workspace.root):
             return
-        sha = verify.commit_story(self.paths.project, message)
+        sha = verify.commit_story(self.workspace.root, message)
         self.journal.append("sweep-ledger-commit", message=message, commit=sha)
 
     # ---------------------------------------------------------- bundles
@@ -891,7 +911,7 @@ class SweepEngine(Engine):
         return bundles
 
     def _write_intent(self, bundle: Bundle, dirname: str) -> Path:
-        ledger = self.paths.deferred_work
+        ledger = self.workspace.paths.deferred_work
         text = ledger.read_text(encoding="utf-8") if ledger.is_file() else ""
         entries = {e.id: e for e in deferredwork.parse_ledger(text)}
         blocks = [entries[i].body.rstrip() for i in bundle.dw_ids if i in entries]
@@ -923,11 +943,14 @@ class SweepEngine(Engine):
 
     def _verify_dev_artifacts(self, task: StoryTask, result_json: dict | None):
         return verify.verify_dev_bundle(
-            task, self.paths, result_json, review_enabled=self.policy.review.enabled
+            task, self.workspace.paths, result_json, review_enabled=self.policy.review.enabled
         )
 
     def _verify_review(self, task: StoryTask):
-        return verify.verify_review_bundle(task, self.paths, self.policy)
+        return verify.verify_review_bundle(task, self.workspace.paths, self.policy)
 
     def _commit_message(self, task: StoryTask) -> str:
+        rendered = self._render_commit_template(task)
+        if rendered is not None:
+            return rendered
         return f"sweep {task.story_key}: {', '.join(task.dw_ids)} via bmad-auto"

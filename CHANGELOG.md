@@ -5,6 +5,72 @@ All notable changes to `bmad-automator` are documented here. The format is based
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
 
+## [0.4.0] — 2026-06-16
+
+First release with **opt-in git-worktree isolation** for runs and sweeps. The default is
+unchanged: with no `[scm]` configuration, work happens in place on the checked-out branch
+exactly as before (`isolation = "none"` is byte-for-byte identical to prior behavior).
+
+### Added
+
+- **Configurable `repo_root` + Workspace seam.** `_bmad/bmm/config.yaml` gains an optional
+  `repo_root` key (defaults to the project dir) that decouples "where git work + code sessions
+  happen" from "where run state lives." All code/git/artifact access now routes through a single
+  `Workspace` indirection, so redirecting work into a worktree is a localized change rather than a
+  sweep across the engine.
+- **Worktree isolation** — `[scm] isolation = "worktree"` runs each story (and each sweep bundle)
+  in its own `git worktree` on a dedicated `automator/<run_id>[/<story>]` branch cut from the
+  target branch, then merges it back into the target **locally** (merge strategy `ff`, `merge`, or
+  `squash`). The main checkout stays free while a run is in flight, and run state stays in the main
+  repo's `.automator/` — never inside a worktree. Knobs: `branch_per` (`story` | `run`; `run`
+  shares one branch across the run and forces `delete_branch = false`), `target_branch` (default =
+  the branch checked out at run start; a configured branch is created/checked out in the main repo
+  and never inside a worktree), `delete_branch`, and `keep_failed`.
+- **Failed-unit forensics.** A deferred/escalated unit's full diff (tracked + untracked) is
+  preserved to `run_dir/failed/<unit>/changes.patch`; with `keep_failed` (default) its worktree +
+  branch stay mounted for inspection. `failed_diff_max_mb` (default `5`) caps the per-file size of
+  untracked files in that patch — oversized files are skipped with a labelled marker — and
+  `failed_diff_unlimited` lifts the cap entirely (logs a warning when active).
+- **`commit_message_template`** — optional `[scm]` template (`{story_key}` / `{run_id}`
+  substituted) used for story and sweep-bundle commits when set.
+- The full `[scm]` section (isolation, `branch_per`, `target_branch`, `merge_strategy`,
+  `delete_branch`, `keep_failed`, the failed-diff caps, and the commit template) is editable from
+  the TUI settings screen. (`max_parallel` is omitted while it stays inert.)
+- **Low-frame-rate TUI mode.** `bmad-auto tui --low-frame-rate` (or `[tui] low_frame_rate = true`,
+  editable from the settings screen) caps Textual to 15fps and disables animations by setting
+  `TEXTUAL_FPS` / `TEXTUAL_ANIMATIONS` before the app starts. Fixes the repaint tearing/garbage
+  seen when driving the dashboard over a slow or high-latency link (SSH, Tailscale), where a 60fps
+  update stream can't drain in time and partial frames paint over old ones. The setting takes
+  effect the next time the TUI launches; an explicit `TEXTUAL_FPS` in the environment still wins.
+- **git worktree / branch / merge / diff primitives** in `verify.py` (worktree add/remove/list/
+  prune, `create_branch`, `merge_branch`, `capture_diff`, …), unit-tested in isolation.
+
+### Changed
+
+- Worktree-mode integration is always **serialized** — unit branches merge into the target one at
+  a time. `max_parallel` exists as a validated knob but is clamped to `1` (inert) until internal
+  parallel fan-out is built.
+- Story spec paths are persisted **relative to the worktree** in `state.json`, so a kept-failed
+  run's state stays portable if the worktree is later moved.
+- The run reclaims its worktree scaffolding on clean completion (deliberately-kept failed/escalated
+  worktrees are left in place and journalled so they can be found).
+- **TUI settings editor now collapses every section by default.** Each policy section
+  (`gates`, `limits`, `scm`, …) starts collapsed with a one-line description in its header, so the
+  grown-large form scans at a glance — expand only the section you want to edit. `ctrl+e` toggles
+  all sections open/closed at once.
+
+### Fixed
+
+- A detached HEAD or unborn repo no longer lands worktree merges on an unreferenced commit — the
+  run pauses with a clear reason instead. A merge conflict against the target keeps the unit branch
+  for manual merge and escalates; `capture_diff` now raises on a genuine `git` error (rather than
+  silently truncating the patch) and `merge_branch` reports a failed abort/reset.
+- **Editing settings no longer dirties the worktree for validation.** `worktree_clean()` (the
+  pre-flight gate for `run`/`sweep`/`validate`) now ignores `.automator/policy.toml`, so saving a
+  change in the settings editor no longer forces a commit of the config before the next command.
+  Only that one file is exempt — the deferred-work ledger under `.automator/` still commits as
+  before.
+
 ## [0.3.2] — 2026-06-15
 
 ### Added
@@ -145,6 +211,8 @@ enforced in CI.
   implementation phase, driven by a Python control loop with hook-based session transport and
   resumable on-disk run state.
 
+[0.4.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.0
+[0.3.2]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.2
 [0.3.1]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.1
 [0.3.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.0
 [0.2.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.2.0

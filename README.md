@@ -33,6 +33,7 @@ Inspired by the official [bmad-automator](https://github.com/bmad-code-org/bmad-
 - 📒 **One source of truth.** `sprint-status.yaml` is owned by the BMAD skills; the orchestrator only ever reads it.
 - 🪟 **Fresh context per step.** Dev and review are separate sessions — review never inherits the implementer's context, so there's no anchoring bias.
 - ♻️ **Resumable & multi-agent.** Every run is a resumable state machine on disk, and a generic tmux adapter drives `claude`, `codex`, or `gemini` (mix per stage).
+- 🌿 **Optional worktree isolation.** Opt in (`[scm] isolation = "worktree"`) and each story runs in its own git worktree/branch and merges back locally — your main checkout stays free while a run is in flight.
 
 ## Requirements
 
@@ -68,7 +69,7 @@ bmad-auto tui                    # …or drive everything from the dashboard
 | `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals (plus a count of decisions awaiting an answer).                                                                                                                                                   |
 | `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                                         |
 | `bmad-auto cleanup`           | Remove leftover tmux artifacts: kill `bmad-auto-<id>` sessions for finished/stopped/interrupted runs (and orphans whose run dir is gone) and close parked `bmad-auto-ctl` windows. `--dry-run` lists without killing. Live runs are never touched. |
-| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra).                                                                                                                                                                                               |
+| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra). `--low-frame-rate` caps it to 15fps + disables animations (fixes repaint tearing over slow/SSH links; also `[tui] low_frame_rate`).                                                           |
 
 Every command takes `--project <dir>` (default: the current directory).
 
@@ -120,7 +121,7 @@ Unattended sweeps (`--no-prompt`) skip decisions, and an attended one can be aba
 <img src="docs/images/settings.png" alt="The settings screen editing .automator/policy.toml, grouped by section with defaults shown as placeholders." width="880">
 </div>
 
-Press **`g`** to edit `.automator/policy.toml` in a form grouped by section — comment-preserving (tomlkit), validated with the engine's own parser before saving, with unset keys showing their defaults as placeholders.
+Press **`g`** to edit `.automator/policy.toml` in a form grouped by section — comment-preserving (tomlkit), validated with the engine's own parser before saving, with unset keys showing their defaults as placeholders. Every section starts collapsed with a one-line description; **`ctrl+e`** expands/collapses all at once.
 
 ### Key bindings
 
@@ -159,7 +160,9 @@ sprint-status.yaml: 1-2-account-mgmt: ready-for-dev
   │          (bounded loop, default 3 cycles)
   ├─ VERIFY  spec done · sprint done · run [verify].commands again — a failure
   │          routes a feedback-driven dev fix session, then a fresh review cycle
-  └─ COMMIT  orchestrator commits; epic boundary → gate / retro notification
+  └─ COMMIT  orchestrator commits (then, under [scm] isolation = "worktree",
+             merges the unit branch back into the target branch locally);
+             epic boundary → gate / retro notification
 ```
 
 **Failure handling:** bounded dev retries (verify-command failures keep the tree and feed the failing output to the next session via `--feedback`; other failures roll back to baseline), **plateau-defer** when review won't converge (story skipped, spec stashed into the run dir, `deferred-work.md` additions preserved, run continues), and typed escalations — `CRITICAL` pauses the run and notifies you (desktop + `ATTENTION` file), `PREFERENCE` is journaled and the run continues.
@@ -309,6 +312,21 @@ max_triage_attempts = 2    # triage validation retries before escalating
 max_migration_attempts = 2 # legacy-ledger migration retries before escalating
 repeat = false             # re-triage after each cycle, continue on new deferred work
 max_cycles = 5             # safety cap on cycles per sweep run when repeat = true
+
+[scm]                      # source-control isolation + merge-back; defaults = work in place
+isolation = "none"         # none | worktree
+branch_per = "story"       # story | run (worktree mode only; "run" forces delete_branch = false)
+target_branch = ""         # "" = the branch checked out at run start
+merge_strategy = "merge"   # ff | merge | squash (how a unit branch lands on the target)
+delete_branch = true       # delete the unit branch after a successful merge
+keep_failed = true         # keep a failed unit's worktree + branch mounted for inspection
+failed_diff_max_mb = 5     # per-file cap (MB) for untracked files in a kept-failed unit's changes.patch
+failed_diff_unlimited = false  # true = no size cap on the failed-unit diff (warns when active)
+commit_message_template = ""   # {story_key} / {run_id} substituted; empty = built-in default
+max_parallel = 1           # units in flight at once (parallel fan-out unbuilt; values > 1 clamp to 1)
+
+[tui]
+low_frame_rate = false     # true = cap to 15fps + disable animations (= bmad-auto tui --low-frame-rate)
 ```
 
 **Gate modes:** `none` runs everything unattended; `per-epic` (default) pauses at epic boundaries; `per-story-spec-approval` pauses after each spec is written so you approve it before implementation is reviewed.
@@ -316,6 +334,19 @@ max_cycles = 5             # safety cap on cycles per sweep run when repeat = tr
 **Review:** `[review].enabled = false` drops the separate fresh-context review session; the dev pass instead runs `bmad-quick-dev`'s own internal triple-review (Blind Hunter / Edge Case Hunter / Acceptance Auditor) and finalizes the story straight to `done` — one session per story instead of two, verify commands still gating the commit. Governs deferred-work sweeps too.
 
 `bmad-auto init` (without `--cli`) registers hooks for every CLI profile the policy references, so a dual-client setup needs no extra flags.
+
+### Worktree isolation
+
+By default work happens **in place** on the checked-out branch (`[scm] isolation = "none"` — byte-for-byte the prior behavior). Set `isolation = "worktree"` and each story (and each sweep bundle) runs in its own `git worktree` on a dedicated `automator/<run_id>[/<story>]` branch cut from the target branch, then merges back into the target **locally** (`merge_strategy` = `ff` / `merge` / `squash`). The main checkout stays free while a run is in flight, and run state never moves into a worktree — `.automator/` always lives in the main repo.
+
+- **`branch_per`** — `story` (a branch per story) or `run` (one shared branch across the run; this forces `delete_branch = false` so the shared branch survives between units).
+- **`target_branch`** — the branch every unit merges into; empty means the branch checked out at run start. A configured branch is created if missing (a detached HEAD or unborn repo pauses the run rather than merging onto an unreferenced commit).
+- **`keep_failed`** (default on) — a deferred/escalated unit's worktree + branch stay mounted for inspection, and its full diff (tracked + untracked) is preserved to `run_dir/failed/<unit>/changes.patch`. `failed_diff_max_mb` caps the per-file size of untracked files in that patch (oversized files skipped with a marker); `failed_diff_unlimited` lifts the cap.
+- **`commit_message_template`** — when set, the message used for story/bundle commits (`{story_key}` / `{run_id}` substituted).
+
+Merge-back is always **serialized** — `max_parallel` is a validated knob clamped to `1` until parallel fan-out lands. PRs aren't created automatically; open them by hand from the unit branches afterward if you want them.
+
+For a monorepo or any layout where the git root differs from the project dir, set an optional `repo_root` key in `_bmad/bmm/config.yaml` — it decouples where git/code work happens from where run state lives (defaults to the project dir).
 
 ## Run state
 

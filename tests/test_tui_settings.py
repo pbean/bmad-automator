@@ -11,7 +11,7 @@ from __future__ import annotations
 import tomllib
 
 from test_tui_app import until
-from textual.widgets import Input, Switch
+from textual.widgets import Collapsible, Input, Switch
 
 from automator import policy as policy_mod
 from automator.policy import POLICY_FILE, POLICY_TEMPLATE
@@ -120,6 +120,12 @@ async def open_settings(app, pilot) -> SettingsScreen:
     return app.screen
 
 
+def expand_all(screen) -> None:
+    """Sections start collapsed; expand them so inner fields are focusable."""
+    for c in screen.query(Collapsible):
+        c.collapsed = False
+
+
 def write_policy(project) -> None:
     path = project.project / POLICY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,6 +183,18 @@ async def test_settings_screen_review_toggle_roundtrip(project):
         assert pol.review.enabled is False
 
 
+async def test_settings_screen_low_frame_rate_toggle_roundtrip(project):
+    write_policy(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        screen.query_one("#tui-low_frame_rate", Switch).value = True
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        pol = policy_mod.load(project.project / POLICY_FILE)
+        assert pol.tui.low_frame_rate is True
+
+
 async def test_settings_screen_stage_override_roundtrip(project):
     write_policy(project)
     app = BmadAutoApp(project.project)
@@ -196,6 +214,27 @@ async def test_settings_screen_stage_override_roundtrip(project):
         assert pol.adapter.extra_args == ("--permission-mode", "bypassPermissions")
 
 
+# ----------------------------------------------- section collapse / expand-all
+
+
+async def test_sections_start_collapsed_and_toggle_all(project):
+    write_policy(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        sections = list(screen.query(Collapsible))
+        assert sections  # sanity: the form is grouped into sections
+        assert all(c.collapsed for c in sections)  # every section starts collapsed
+
+        await pilot.press("ctrl+e")  # expand all
+        await pilot.pause()
+        assert all(not c.collapsed for c in sections)
+
+        await pilot.press("ctrl+e")  # collapse all again
+        await pilot.pause()
+        assert all(c.collapsed for c in sections)
+
+
 # -------------------------------------------------- arrow nav + enter-to-edit
 
 
@@ -204,6 +243,8 @@ async def test_arrow_keys_navigate_fields(project):
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
+        expand_all(screen)
+        await pilot.pause()
         screen.query_one("#limits-max_review_cycles", Input).focus()
         await pilot.pause()
         before = app.focused
@@ -220,6 +261,8 @@ async def test_arrow_down_skips_disabled_args_input(project):
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
+        expand_all(screen)
+        await pilot.pause()
         # override off -> the args Input is disabled and out of the focus chain
         args_box = screen.query_one("#adapter-extra_args", Input)
         assert args_box.disabled
@@ -237,6 +280,8 @@ async def test_enter_opens_select_and_arrows_pick(project):
         from textual.widgets import Select
 
         screen = await open_settings(app, pilot)
+        expand_all(screen)
+        await pilot.pause()
         select = screen.query_one("#gates-mode", Select)
         start = select.value
         select.focus()
@@ -258,6 +303,8 @@ async def test_textarea_enter_edit_mode_and_escape(project):
         from textual.widgets import TextArea
 
         screen = await open_settings(app, pilot)
+        expand_all(screen)
+        await pilot.pause()
         area = screen.query_one("#verify-commands", TextArea)
 
         # nav mode: down leaves the TextArea

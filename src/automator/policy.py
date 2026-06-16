@@ -12,6 +12,9 @@ POLICY_FILE = Path(".automator") / "policy.toml"
 GATE_MODES = {"none", "per-epic", "per-story-spec-approval"}
 RETRO_MODES = {"never", "notify", "auto"}
 SWEEP_AUTO_MODES = {"never", "per-epic", "run-end"}
+ISOLATION_MODES = {"none", "worktree"}
+BRANCH_PER_MODES = {"story", "run"}
+MERGE_STRATEGIES = {"ff", "merge", "squash"}
 
 
 class PolicyError(Exception):
@@ -53,6 +56,15 @@ class ReviewPolicy:
     # the dev session runs quick-dev's own internal triple-review instead and
     # finalizes the story straight to done.
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class TuiPolicy:
+    # low_frame_rate caps Textual to 15fps and disables animations (sets
+    # TEXTUAL_FPS / TEXTUAL_ANIMATIONS before the app imports textual). Fixes
+    # repaint tearing/garbage when driving the TUI over a slow/high-latency
+    # link (SSH, Tailscale) where a 60fps update stream can't drain in time.
+    low_frame_rate: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,45 @@ class AdapterPolicy:
 
 
 @dataclass(frozen=True)
+class ScmPolicy:
+    # isolation = none  -> work happens in place on the checked-out branch
+    #                      (today's behavior; no branches, no merge-back).
+    # isolation = worktree -> each unit runs in its own git worktree/branch and
+    #                      merges back into target_branch locally (Phase 3).
+    isolation: str = "none"  # none | worktree
+    branch_per: str = "story"  # story | run (worktree mode only)
+    target_branch: str = ""  # "" = the branch checked out at run start
+    merge_strategy: str = "merge"  # ff | merge | squash
+    delete_branch: bool = True  # delete the unit branch after a successful merge
+    keep_failed: bool = True  # keep a failed unit's worktree+branch for inspection
+    # failed_diff_max_mb caps the per-file size (MB) of untracked files captured
+    # into a kept-failed unit's forensic changes.patch, so a stray build dir or
+    # huge log can't blow it up; oversized files are skipped with a labelled
+    # marker in the patch. failed_diff_unlimited lifts the cap entirely (capture
+    # everything regardless of size) — convenient but may produce very large
+    # patches, so a warning is journalled when it's active.
+    failed_diff_max_mb: int = 5
+    failed_diff_unlimited: bool = False
+    # commit_message_template, when non-empty, is the commit message dev sessions
+    # use for a story's commit (placeholders {story_key} and {run_id} are
+    # substituted). Empty = the built-in default message.
+    commit_message_template: str = ""
+    # max_parallel: units in flight at once. Parallel fan-out (Phase 5) is not
+    # built yet, so any value > 1 is clamped to 1 in loads() — the knob exists
+    # but is inert until the parallel scheduler lands.
+    max_parallel: int = 1
+
+    def __post_init__(self) -> None:
+        # branch_per="run" shares a single branch across every unit in the run;
+        # deleting it after the first unit's merge would defeat that (the next
+        # unit would re-cut a fresh branch). Coerce delete_branch off so the
+        # shared-branch semantics actually hold, regardless of how this policy
+        # was constructed.
+        if self.branch_per == "run" and self.delete_branch:
+            object.__setattr__(self, "delete_branch", False)
+
+
+@dataclass(frozen=True)
 class Policy:
     gates: GatesPolicy = field(default_factory=GatesPolicy)
     limits: LimitsPolicy = field(default_factory=LimitsPolicy)
@@ -124,6 +175,8 @@ class Policy:
     review: ReviewPolicy = field(default_factory=ReviewPolicy)
     adapter: AdapterPolicy = field(default_factory=AdapterPolicy)
     sweep: SweepPolicy = field(default_factory=SweepPolicy)
+    scm: ScmPolicy = field(default_factory=ScmPolicy)
+    tui: TuiPolicy = field(default_factory=TuiPolicy)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,6 +225,8 @@ def loads(text: str) -> Policy:
     review_d = _section(doc, "review")
     adapter_d = _section(doc, "adapter")
     sweep_d = _section(doc, "sweep")
+    scm_d = _section(doc, "scm")
+    tui_d = _section(doc, "tui")
 
     gates = GatesPolicy(
         mode=str(gates_d.get("mode", GatesPolicy.mode)),
@@ -259,6 +314,42 @@ def loads(text: str) -> Policy:
             "sweep.max_bundles, sweep.max_triage_attempts, "
             "sweep.max_migration_attempts and sweep.max_cycles must be >= 1"
         )
+    requested_parallel = int(scm_d.get("max_parallel", ScmPolicy.max_parallel))
+    if requested_parallel < 1:
+        raise PolicyError(f"scm.max_parallel must be >= 1: got {requested_parallel}")
+    scm = ScmPolicy(
+        isolation=str(scm_d.get("isolation", ScmPolicy.isolation)),
+        branch_per=str(scm_d.get("branch_per", ScmPolicy.branch_per)),
+        target_branch=str(scm_d.get("target_branch", ScmPolicy.target_branch)),
+        merge_strategy=str(scm_d.get("merge_strategy", ScmPolicy.merge_strategy)),
+        delete_branch=bool(scm_d.get("delete_branch", ScmPolicy.delete_branch)),
+        keep_failed=bool(scm_d.get("keep_failed", ScmPolicy.keep_failed)),
+        failed_diff_max_mb=int(scm_d.get("failed_diff_max_mb", ScmPolicy.failed_diff_max_mb)),
+        failed_diff_unlimited=bool(
+            scm_d.get("failed_diff_unlimited", ScmPolicy.failed_diff_unlimited)
+        ),
+        commit_message_template=str(
+            scm_d.get("commit_message_template", ScmPolicy.commit_message_template)
+        ),
+        # Phase 5 parallel fan-out is unbuilt: clamp to 1 so the knob is inert.
+        max_parallel=min(requested_parallel, 1),
+    )
+    if scm.isolation not in ISOLATION_MODES:
+        raise PolicyError(
+            f"scm.isolation must be one of {sorted(ISOLATION_MODES)}: got {scm.isolation!r}"
+        )
+    if scm.branch_per not in BRANCH_PER_MODES:
+        raise PolicyError(
+            f"scm.branch_per must be one of {sorted(BRANCH_PER_MODES)}: got {scm.branch_per!r}"
+        )
+    if scm.merge_strategy not in MERGE_STRATEGIES:
+        raise PolicyError(
+            f"scm.merge_strategy must be one of {sorted(MERGE_STRATEGIES)}: "
+            f"got {scm.merge_strategy!r}"
+        )
+    if scm.failed_diff_max_mb < 1:
+        raise PolicyError(f"scm.failed_diff_max_mb must be >= 1: got {scm.failed_diff_max_mb}")
+    tui = TuiPolicy(low_frame_rate=bool(tui_d.get("low_frame_rate", TuiPolicy.low_frame_rate)))
     return Policy(
         gates=gates,
         limits=limits,
@@ -267,6 +358,8 @@ def loads(text: str) -> Policy:
         review=review,
         adapter=adapter,
         sweep=sweep,
+        scm=scm,
+        tui=tui,
     )
 
 
@@ -328,4 +421,27 @@ max_triage_attempts = 2      # triage validation retries before escalating
 max_migration_attempts = 2   # legacy-ledger migration retries before escalating
 repeat = false               # after a cycle completes, re-triage and continue on newly deferred work
 max_cycles = 5               # safety cap on total cycles per sweep run when repeat = true
+
+[scm]
+# Source-control isolation + merge-back. Defaults reproduce today's behavior:
+# work happens in place on the checked-out branch, with no branches.
+isolation = "none"           # none | worktree
+branch_per = "story"         # story | run (worktree mode only; "run" forces delete_branch = false)
+target_branch = ""           # "" = the branch checked out at run start
+merge_strategy = "merge"     # ff | merge | squash (worktree mode merges the unit branch into target locally)
+delete_branch = true         # delete the unit branch after a successful merge
+keep_failed = true           # keep a failed unit's worktree+branch for inspection
+failed_diff_max_mb = 5       # per-file size cap (MB) for untracked files in a kept-failed unit's changes.patch; oversized files are skipped with a marker
+failed_diff_unlimited = false # true = capture the failed-unit diff with no size cap (may produce very large patches; warns when active)
+# commit_message_template: when set, the commit message dev sessions use for a
+# story's commit. {story_key} and {run_id} are substituted. Empty = built-in default.
+commit_message_template = ""
+max_parallel = 1             # units in flight at once (parallel fan-out unbuilt; values > 1 clamp to 1)
+
+[tui]
+# low_frame_rate = true caps Textual to 15fps and disables animations (sets
+# TEXTUAL_FPS=15 / TEXTUAL_ANIMATIONS=none at launch). Fixes repaint tearing
+# over slow/high-latency links (SSH, Tailscale). Equivalent to launching with
+# `bmad-auto tui --low-frame-rate`. Takes effect the next time the TUI starts.
+low_frame_rate = false
 """

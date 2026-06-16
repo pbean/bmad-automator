@@ -39,7 +39,10 @@ from textual.widgets import (
 )
 
 from ...policy import (
+    BRANCH_PER_MODES,
     GATE_MODES,
+    ISOLATION_MODES,
+    MERGE_STRATEGIES,
     POLICY_FILE,
     RETRO_MODES,
     SWEEP_AUTO_MODES,
@@ -48,7 +51,9 @@ from ...policy import (
     LimitsPolicy,
     NotifyPolicy,
     ReviewPolicy,
+    ScmPolicy,
     SweepPolicy,
+    TuiPolicy,
 )
 from ..settings import STAGES, PolicyDoc
 
@@ -179,10 +184,119 @@ _FIELDS: tuple[_Field, ...] = (
     ),
     _Field("sweep", "repeat", "switch", default=SweepPolicy.repeat),
     _Field("sweep", "max_cycles", "int", minimum=1, default=SweepPolicy.max_cycles),
+    _Field(
+        "scm",
+        "isolation",
+        "select",
+        options=tuple(sorted(ISOLATION_MODES)),
+        default=ScmPolicy.isolation,
+        description=(
+            "none: work in place on the checked-out branch (default) · "
+            "worktree: run each story in its own git worktree, merge back to the target branch"
+        ),
+    ),
+    _Field(
+        "scm",
+        "branch_per",
+        "select",
+        options=tuple(sorted(BRANCH_PER_MODES)),
+        default=ScmPolicy.branch_per,
+        description=(
+            "worktree mode: one branch per story, or one shared branch per run "
+            "(run forces delete-branch off so the shared branch survives)"
+        ),
+    ),
+    _Field(
+        "scm",
+        "target_branch",
+        "str",
+        placeholder="default: the branch checked out at run start",
+        description="worktree mode: branch all units merge back into (created if missing)",
+    ),
+    _Field(
+        "scm",
+        "merge_strategy",
+        "select",
+        options=tuple(sorted(MERGE_STRATEGIES)),
+        default=ScmPolicy.merge_strategy,
+        description="worktree mode: how a unit branch lands on the target — ff, merge, or squash",
+    ),
+    _Field(
+        "scm",
+        "delete_branch",
+        "switch",
+        default=ScmPolicy.delete_branch,
+        description="worktree mode: delete the unit branch after a successful merge",
+    ),
+    _Field(
+        "scm",
+        "keep_failed",
+        "switch",
+        default=ScmPolicy.keep_failed,
+        description="worktree mode: keep a failed unit's worktree + branch mounted for inspection",
+    ),
+    _Field(
+        "scm",
+        "commit_message_template",
+        "str",
+        placeholder="blank = built-in default; {story_key} / {run_id} substituted",
+        label="commit message template",
+        description="commit message dev sessions use for a story/bundle commit when set",
+    ),
+    _Field(
+        "scm",
+        "failed_diff_max_mb",
+        "int",
+        minimum=1,
+        default=ScmPolicy.failed_diff_max_mb,
+        label="failed-diff size cap (MB)",
+        description=(
+            "per-file size limit for untracked files captured into a kept-failed "
+            "unit's changes.patch · oversized files are skipped with a marker"
+        ),
+    ),
+    _Field(
+        "scm",
+        "failed_diff_unlimited",
+        "switch",
+        default=ScmPolicy.failed_diff_unlimited,
+        label="uncap failed-diff size",
+        description=(
+            "⚠ ON: capture failed-unit diffs with NO size limit (overrides the cap "
+            "above) — may produce very large patches; a warning is logged when active"
+        ),
+    ),
+    _Field(
+        "tui",
+        "low_frame_rate",
+        "switch",
+        default=TuiPolicy.low_frame_rate,
+        label="low frame rate",
+        description=(
+            "cap to 15fps + disable animations — fixes repaint tearing/garbage over "
+            "slow or SSH links · takes effect next time the TUI launches"
+        ),
+    ),
 )
 
 # collect() sentinel for a field whose widget holds an unusable value
 _INVALID = object()
+
+# brief description shown after each section name in its collapsible header
+_SECTION_DESC = {
+    "gates": "approval gates, escalation & retrospective behavior",
+    "review": "separate adversarial review session toggle",
+    "limits": "cycle/attempt caps, timeout & token budget",
+    "verify": "post-implementation verification commands",
+    "notify": "desktop & file notifications",
+    "adapter": "CLI client, model & bypass flags (base for all stages)",
+    "adapter.dev": "dev-stage adapter overrides",
+    "adapter.review": "review-stage adapter overrides",
+    "adapter.triage": "triage-stage adapter overrides",
+    "sweep": "deferred-work sweep automation",
+    "scm": "git isolation, branching & merge-back",
+    "tui": "dashboard rendering (slow-link / SSH tuning)",
+}
 
 
 class SettingsScreen(Screen[None]):
@@ -242,6 +356,7 @@ class SettingsScreen(Screen[None]):
     BINDINGS = [
         Binding("escape", "back", "back"),
         Binding("ctrl+s", "save", "save"),
+        Binding("ctrl+e", "toggle_all", "expand/collapse all"),
         Binding("up", "nav_prev", "prev", show=False, priority=True),
         Binding("down", "nav_next", "next", show=False, priority=True),
         Binding("enter", "edit_field", "edit", show=False, priority=True),
@@ -268,8 +383,9 @@ class SettingsScreen(Screen[None]):
                 id="note",
             )
             for section, fields in groupby(_FIELDS, key=lambda f: f.section):
-                collapsed = section.startswith("adapter.") and not self._has_keys(section)
-                with Collapsible(title=section, collapsed=collapsed):
+                desc = _SECTION_DESC.get(section)
+                title = f"{section} — {desc}" if desc else section
+                with Collapsible(title=title, collapsed=True):
                     for spec in fields:
                         yield from self._compose_field(spec)
             yield Static(id="errors")
@@ -277,9 +393,6 @@ class SettingsScreen(Screen[None]):
                 yield Button("save", variant="primary", id="save")
                 yield Button("cancel", id="cancel")
         yield Footer()
-
-    def _has_keys(self, section: str) -> bool:
-        return any(self._doc.get(section, k) is not None for k in ("name", "model", "extra_args"))
 
     def _compose_field(self, spec: _Field) -> ComposeResult:
         raw = self._doc.get(spec.section, spec.key)
@@ -367,6 +480,13 @@ class SettingsScreen(Screen[None]):
         if isinstance(area, TextArea):
             self._editing = area
             area.add_class("-editing")
+
+    def action_toggle_all(self) -> None:
+        self._exit_edit()
+        sections = list(self.query(Collapsible))
+        target = any(not c.collapsed for c in sections)  # something open -> collapse all
+        for c in sections:
+            c.collapsed = target
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape" and self._editing is not None:
