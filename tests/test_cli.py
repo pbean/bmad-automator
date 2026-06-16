@@ -253,6 +253,57 @@ def test_run_honors_preassigned_run_id_and_writes_pid(project, monkeypatch):
     assert (run_dir / "engine.pid").read_text() == str(os.getpid())
 
 
+def _stub_run_tui(monkeypatch):
+    import automator.tui.app as tui_app
+
+    monkeypatch.setattr(tui_app, "run_tui", lambda _project: 0)
+
+
+def test_tui_low_frame_rate_flag_sets_textual_env(tmp_path, monkeypatch):
+    import os
+
+    _stub_run_tui(monkeypatch)
+    monkeypatch.delenv("TEXTUAL_FPS", raising=False)
+    monkeypatch.delenv("TEXTUAL_ANIMATIONS", raising=False)
+    assert cli.main(["tui", "--project", str(tmp_path), "--low-frame-rate"]) == 0
+    assert os.environ["TEXTUAL_FPS"] == "15"
+    assert os.environ["TEXTUAL_ANIMATIONS"] == "none"
+
+
+def test_tui_low_frame_rate_policy_sets_textual_env(tmp_path, monkeypatch):
+    import os
+
+    _write_policy(tmp_path, "[tui]\nlow_frame_rate = true\n")
+    _stub_run_tui(monkeypatch)
+    monkeypatch.delenv("TEXTUAL_FPS", raising=False)
+    monkeypatch.delenv("TEXTUAL_ANIMATIONS", raising=False)
+    assert cli.main(["tui", "--project", str(tmp_path)]) == 0
+    assert os.environ["TEXTUAL_FPS"] == "15"
+    assert os.environ["TEXTUAL_ANIMATIONS"] == "none"
+
+
+def test_tui_low_frame_rate_off_leaves_env_untouched(tmp_path, monkeypatch):
+    import os
+
+    _stub_run_tui(monkeypatch)
+    monkeypatch.delenv("TEXTUAL_FPS", raising=False)
+    monkeypatch.delenv("TEXTUAL_ANIMATIONS", raising=False)
+    assert cli.main(["tui", "--project", str(tmp_path)]) == 0
+    assert "TEXTUAL_FPS" not in os.environ
+    assert "TEXTUAL_ANIMATIONS" not in os.environ
+
+
+def test_tui_low_frame_rate_preserves_explicit_env(tmp_path, monkeypatch):
+    import os
+
+    _stub_run_tui(monkeypatch)
+    monkeypatch.setenv("TEXTUAL_FPS", "30")  # user's explicit value wins (setdefault)
+    monkeypatch.delenv("TEXTUAL_ANIMATIONS", raising=False)
+    assert cli.main(["tui", "--project", str(tmp_path), "--low-frame-rate"]) == 0
+    assert os.environ["TEXTUAL_FPS"] == "30"
+    assert os.environ["TEXTUAL_ANIMATIONS"] == "none"
+
+
 def _make_run_with_state(project, run_id, **state_kwargs):
     from automator.journal import save_state
     from automator.model import RunState

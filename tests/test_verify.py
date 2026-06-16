@@ -218,6 +218,29 @@ def test_reset_hard_keeps_automator_dir(project):
     assert (keep / "state.json").exists()
 
 
+def test_worktree_clean_ignores_policy_file(project):
+    # A tracked-but-modified .automator/policy.toml (rewritten by the TUI
+    # settings editor) must not count as a dirty tree, or every settings edit
+    # would force a commit before run/sweep/validate.
+    pol = project.project / ".automator" / "policy.toml"
+    pol.parent.mkdir(parents=True, exist_ok=True)
+    pol.write_text('[gates]\nmode = "none"\n')
+    git(project.project, "add", "-f", str(pol))
+    git(project.project, "commit", "-q", "-m", "track policy")
+    assert verify.worktree_clean(project.project)
+
+    pol.write_text('[gates]\nmode = "per-epic"\n')  # edit the tracked config
+    assert verify.worktree_clean(project.project)  # still "clean"
+
+    (project.project / "src.txt").write_text("real change\n")  # any other edit
+    assert not verify.worktree_clean(project.project)
+
+
+def test_worktree_clean_flags_untracked_non_policy(project):
+    (project.project / "stray.txt").write_text("untracked\n")
+    assert not verify.worktree_clean(project.project)
+
+
 def test_commit_story(project):
     task = make_task(project)
     (project.project / "src.txt").write_text("done work\n")

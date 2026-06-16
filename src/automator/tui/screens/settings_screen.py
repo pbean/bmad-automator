@@ -53,6 +53,7 @@ from ...policy import (
     ReviewPolicy,
     ScmPolicy,
     SweepPolicy,
+    TuiPolicy,
 )
 from ..settings import STAGES, PolicyDoc
 
@@ -265,6 +266,17 @@ _FIELDS: tuple[_Field, ...] = (
             "above) — may produce very large patches; a warning is logged when active"
         ),
     ),
+    _Field(
+        "tui",
+        "low_frame_rate",
+        "switch",
+        default=TuiPolicy.low_frame_rate,
+        label="low frame rate",
+        description=(
+            "cap to 15fps + disable animations — fixes repaint tearing/garbage over "
+            "slow or SSH links · takes effect next time the TUI launches"
+        ),
+    ),
 )
 
 # collect() sentinel for a field whose widget holds an unusable value
@@ -283,6 +295,7 @@ _SECTION_DESC = {
     "adapter.triage": "triage-stage adapter overrides",
     "sweep": "deferred-work sweep automation",
     "scm": "git isolation, branching & merge-back",
+    "tui": "dashboard rendering (slow-link / SSH tuning)",
 }
 
 

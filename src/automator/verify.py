@@ -17,11 +17,14 @@ import yaml
 from . import deferredwork
 from .bmadconfig import ProjectPaths
 from .model import StoryTask
-from .policy import Policy
+from .policy import POLICY_FILE, Policy
 from .sprintstatus import story_status
 
 GIT_TIMEOUT_S = 120
 COMMAND_TIMEOUT_S = 30 * 60
+
+# Repo-relative posix path of the orchestrator config, for git pathspecs.
+POLICY_FILE_REL = POLICY_FILE.as_posix()
 
 
 class GitError(Exception):
@@ -72,7 +75,12 @@ def rev_parse_head(repo: Path) -> str:
 
 
 def worktree_clean(repo: Path) -> bool:
-    rc, out = _git(repo, "status", "--porcelain")
+    # The orchestrator's own config file (.automator/policy.toml) is excluded:
+    # the TUI settings editor rewrites it, and a tracked config edit must not
+    # count as a "dirty tree" that blocks run/sweep/validate or forces a commit.
+    # Scope is policy.toml only — the deferred-work ledger also lives under
+    # .automator/ and is meant to be committed (see sweep._commit_ledger).
+    rc, out = _git(repo, "status", "--porcelain", "--", ".", f":(exclude){POLICY_FILE_REL}")
     if rc != 0:
         raise GitError(f"git status failed in {repo}: {out}")
     return out == ""

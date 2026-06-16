@@ -36,6 +36,12 @@ exactly as before (`isolation = "none"` is byte-for-byte identical to prior beha
 - The full `[scm]` section (isolation, `branch_per`, `target_branch`, `merge_strategy`,
   `delete_branch`, `keep_failed`, the failed-diff caps, and the commit template) is editable from
   the TUI settings screen. (`max_parallel` is omitted while it stays inert.)
+- **Low-frame-rate TUI mode.** `bmad-auto tui --low-frame-rate` (or `[tui] low_frame_rate = true`,
+  editable from the settings screen) caps Textual to 15fps and disables animations by setting
+  `TEXTUAL_FPS` / `TEXTUAL_ANIMATIONS` before the app starts. Fixes the repaint tearing/garbage
+  seen when driving the dashboard over a slow or high-latency link (SSH, Tailscale), where a 60fps
+  update stream can't drain in time and partial frames paint over old ones. The setting takes
+  effect the next time the TUI launches; an explicit `TEXTUAL_FPS` in the environment still wins.
 - **git worktree / branch / merge / diff primitives** in `verify.py` (worktree add/remove/list/
   prune, `create_branch`, `merge_branch`, `capture_diff`, …), unit-tested in isolation.
 
@@ -59,6 +65,11 @@ exactly as before (`isolation = "none"` is byte-for-byte identical to prior beha
   run pauses with a clear reason instead. A merge conflict against the target keeps the unit branch
   for manual merge and escalates; `capture_diff` now raises on a genuine `git` error (rather than
   silently truncating the patch) and `merge_branch` reports a failed abort/reset.
+- **Editing settings no longer dirties the worktree for validation.** `worktree_clean()` (the
+  pre-flight gate for `run`/`sweep`/`validate`) now ignores `.automator/policy.toml`, so saving a
+  change in the settings editor no longer forces a commit of the config before the next command.
+  Only that one file is exempt — the deferred-work ledger under `.automator/` still commits as
+  before.
 
 ## [0.3.2] — 2026-06-15
 

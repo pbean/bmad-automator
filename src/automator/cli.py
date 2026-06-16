@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -693,6 +694,12 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
 
 def cmd_tui(args: argparse.Namespace) -> int:
     project = _project(args)
+    # Apply low-frame-rate mode *before* importing textual: it reads TEXTUAL_FPS
+    # / TEXTUAL_ANIMATIONS once at import time. setdefault so an explicit value
+    # in the user's environment still wins. policy.load is textual-free.
+    if args.low_frame_rate or policy_mod.load(_policy_path(project)).tui.low_frame_rate:
+        os.environ.setdefault("TEXTUAL_FPS", "15")
+        os.environ.setdefault("TEXTUAL_ANIMATIONS", "none")
     try:
         from .tui.app import run_tui
     except ModuleNotFoundError as e:
@@ -852,10 +859,16 @@ def main(argv: list[str] | None = None) -> int:
         help="list what would be removed without killing anything",
     )
 
-    add(
+    tui_p = add(
         "tui",
         cmd_tui,
         "interactive dashboard (needs `uv tool install 'bmad-automator[tui]'`)",
+    )
+    tui_p.add_argument(
+        "--low-frame-rate",
+        action="store_true",
+        help="cap to 15fps + disable animations (TEXTUAL_FPS / TEXTUAL_ANIMATIONS) — "
+        "fixes repaint tearing over slow/SSH links; also settable via [tui] low_frame_rate",
     )
 
     args = parser.parse_args(argv)

@@ -59,6 +59,15 @@ class ReviewPolicy:
 
 
 @dataclass(frozen=True)
+class TuiPolicy:
+    # low_frame_rate caps Textual to 15fps and disables animations (sets
+    # TEXTUAL_FPS / TEXTUAL_ANIMATIONS before the app imports textual). Fixes
+    # repaint tearing/garbage when driving the TUI over a slow/high-latency
+    # link (SSH, Tailscale) where a 60fps update stream can't drain in time.
+    low_frame_rate: bool = False
+
+
+@dataclass(frozen=True)
 class SweepPolicy:
     auto: str = "never"  # never | per-epic | run-end
     max_bundles: int = 5  # bundles executed per sweep; triage excess is truncated
@@ -167,6 +176,7 @@ class Policy:
     adapter: AdapterPolicy = field(default_factory=AdapterPolicy)
     sweep: SweepPolicy = field(default_factory=SweepPolicy)
     scm: ScmPolicy = field(default_factory=ScmPolicy)
+    tui: TuiPolicy = field(default_factory=TuiPolicy)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -216,6 +226,7 @@ def loads(text: str) -> Policy:
     adapter_d = _section(doc, "adapter")
     sweep_d = _section(doc, "sweep")
     scm_d = _section(doc, "scm")
+    tui_d = _section(doc, "tui")
 
     gates = GatesPolicy(
         mode=str(gates_d.get("mode", GatesPolicy.mode)),
@@ -338,6 +349,7 @@ def loads(text: str) -> Policy:
         )
     if scm.failed_diff_max_mb < 1:
         raise PolicyError(f"scm.failed_diff_max_mb must be >= 1: got {scm.failed_diff_max_mb}")
+    tui = TuiPolicy(low_frame_rate=bool(tui_d.get("low_frame_rate", TuiPolicy.low_frame_rate)))
     return Policy(
         gates=gates,
         limits=limits,
@@ -347,6 +359,7 @@ def loads(text: str) -> Policy:
         adapter=adapter,
         sweep=sweep,
         scm=scm,
+        tui=tui,
     )
 
 
@@ -424,4 +437,11 @@ failed_diff_unlimited = false # true = capture the failed-unit diff with no size
 # story's commit. {story_key} and {run_id} are substituted. Empty = built-in default.
 commit_message_template = ""
 max_parallel = 1             # units in flight at once (parallel fan-out unbuilt; values > 1 clamp to 1)
+
+[tui]
+# low_frame_rate = true caps Textual to 15fps and disables animations (sets
+# TEXTUAL_FPS=15 / TEXTUAL_ANIMATIONS=none at launch). Fixes repaint tearing
+# over slow/high-latency links (SSH, Tailscale). Equivalent to launching with
+# `bmad-auto tui --low-frame-rate`. Takes effect the next time the TUI starts.
+low_frame_rate = false
 """
