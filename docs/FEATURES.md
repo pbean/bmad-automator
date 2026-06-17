@@ -122,7 +122,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 
 - Each run drives agents in a dedicated `bmad-auto-<run-id>` session; `attach` to watch live.
 - Auto-teardown on finish (`cleanup_session_on_finish`, disable to inspect); `stop` always kills it; paused/interrupted runs keep the session for `resume`.
-- `bmad-auto cleanup` (or `c` in the TUI) sweeps leftover sessions/windows for finished/stopped/orphaned runs; live runs are never touched.
+- `bmad-auto cleanup` (or `c` in the TUI) sweeps leftover sessions/windows for finished/stopped/orphaned runs **of the current project**; live runs, and anything belonging to another project, are never touched.
 
 ### Setup & install
 

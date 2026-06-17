@@ -5,6 +5,20 @@ All notable changes to `bmad-automator` are documented here. The format is based
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
 
+## [0.4.3] — 2026-06-17
+
+### Fixed
+
+- `bmad-auto cleanup` (and the TUI `c` action) no longer kills sessions and control
+  windows belonging to **other** projects' live runs. tmux sessions are global and were
+  named only `bmad-auto-<run_id>` with no project identity, so a run id not found under
+  the current project was treated as a prunable orphan — which matched another project's
+  active run and stopped it prematurely. Each agent session and control-session window is
+  now stamped with its project at creation (a `@bmad_project` tmux option), and cleanup
+  only prunes sessions/windows belonging to the current project. True same-project orphans
+  (a deleted run dir whose session lingers) are still cleaned. Sessions created before this
+  release are untagged and are left untouched across projects until recreated.
+
 ## [0.4.2] — 2026-06-17
 
 ### Fixed

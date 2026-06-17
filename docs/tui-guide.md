@@ -262,12 +262,13 @@ never re-attaches to a dead session.
 
 ## Cleaning up sessions (`c`)
 
-`c` removes leftover tmux artifacts in one pass, after a confirmation modal:
-every `bmad-auto-<run-id>` agent session whose run has finished, stopped, or
-crashed (and any orphan whose run dir is gone), plus the parked
-`[bmad-auto exited …]` windows in `bmad-auto-ctl`. Live runs — and the window
-you triggered the cleanup from — are always spared, so it is safe to press at
-any time. A toast reports how many sessions and windows were closed. The same
+`c` removes leftover tmux artifacts for the current project in one pass, after a
+confirmation modal: every `bmad-auto-<run-id>` agent session whose run has
+finished, stopped, or crashed (and any orphan whose run dir is gone), plus the
+parked `[bmad-auto exited …]` windows in `bmad-auto-ctl`. Live runs, the window
+you triggered the cleanup from, and any session or window belonging to another
+project are always spared, so it is safe to press at any time even with other
+projects' runs in flight. A toast reports how many sessions and windows were closed. The same
 sweep is available from a plain shell as `bmad-auto cleanup` (`--dry-run` to
 preview). Runs already tear their own session down on finish unless you set
 `[adapter] cleanup_session_on_finish = false`; `c` is for the backlog that
