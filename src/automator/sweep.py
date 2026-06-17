@@ -775,6 +775,7 @@ class SweepEngine(Engine):
             tmp.write_text(json.dumps(answers, indent=2), encoding="utf-8")
             tmp.replace(decisions_path)
         pending = [d for d in plan.decisions if d.id not in answers]
+        answered_interactively = False
         if not self.prompting:
             pending = [d for d in pending if d.id not in self._skipped_decisions]
             for decision in pending:
@@ -817,10 +818,30 @@ class SweepEngine(Engine):
                     effect=option.effect,
                 )
                 self._apply_decision_effect(decision, option)
+                answered_interactively = True
                 if option.effect == "close":
                     closed += 1
         self._commit_ledger("chore(sweep): record deferred-work decisions")
+        if answered_interactively:
+            self._return_after_decisions()
         return answers, closed
+
+    def _return_after_decisions(self) -> None:
+        """Once the human has answered this cycle's decisions over an attached
+        terminal, hand it back so the sweep runs its bundles in the background —
+        detach a plain-shell client, switch a tmux client back to its origin. A
+        plain foreground sweep (nobody attached, no return target) is untouched.
+
+        After a successful return we go unattended for the rest of the run: a
+        later --repeat cycle's input() would otherwise block forever in a window
+        no one is viewing. New decisions then defer via the unattended path,
+        recorded for `bmad-auto decisions` or the next attended sweep."""
+        from .tui import launch  # import-light: launch.py has no textual imports
+
+        if launch.return_attached_client():
+            self.journal.append("sweep-returned-after-decisions")
+            self.prompter.print_fn("✓ decisions recorded — sweep continues in the background")
+            self.prompting = False
 
     def _apply_decision_effect(self, decision: Decision, option: DecisionOption) -> None:
         ledger = self.workspace.paths.deferred_work

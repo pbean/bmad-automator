@@ -523,6 +523,64 @@ def test_interactive_decisions_build_and_close(project):
     )
 
 
+def _close_decision_plan():
+    return triage_result(
+        ["DW-1"],
+        decisions=[
+            {
+                "id": "DW-1",
+                "question": "close as moot?",
+                "context": "",
+                "options": [
+                    {"key": "1", "label": "Close it", "effect": "close", "resolution": "moot"},
+                    {"key": "2", "label": "Keep open", "effect": "keep-open"},
+                ],
+                "recommendation": "1",
+            }
+        ],
+    )
+
+
+def test_interactive_decisions_return_client_goes_unattended(project, monkeypatch):
+    """When a client was attached to answer, the sweep hands the terminal back
+    after the decisions and goes unattended so later cycles don't block on a
+    detached window."""
+    returned: list[bool] = []
+    monkeypatch.setattr(
+        "automator.tui.launch.return_attached_client",
+        lambda: bool(returned.append(True)) or True,
+    )
+    write_ledger(project, {"DW-1": "open"})
+    engine, _adapter = make_sweep(
+        project,
+        [triage_effect(_close_decision_plan())],
+        answers=["1"],
+        prompting=True,
+    )
+    summary = engine.run()
+    assert not summary.paused
+    assert returned == [True]  # asked exactly once, after the decisions phase
+    assert engine.prompting is False
+    assert '"sweep-returned-after-decisions"' in journal_text(engine)
+
+
+def test_interactive_decisions_no_attach_stays_attended(project, monkeypatch):
+    """A plain foreground sweep (nobody attached, no return target) keeps
+    prompting and never emits the return event."""
+    monkeypatch.setattr("automator.tui.launch.return_attached_client", lambda: False)
+    write_ledger(project, {"DW-1": "open"})
+    engine, _adapter = make_sweep(
+        project,
+        [triage_effect(_close_decision_plan())],
+        answers=["1"],
+        prompting=True,
+    )
+    summary = engine.run()
+    assert not summary.paused
+    assert engine.prompting is True
+    assert '"sweep-returned-after-decisions"' not in journal_text(engine)
+
+
 def test_unattended_skips_decisions(project):
     write_ledger(project, {"DW-1": "open", "DW-2": "open"})
     plan = triage_result(

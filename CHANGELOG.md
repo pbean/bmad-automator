@@ -5,6 +5,26 @@ All notable changes to `bmad-automator` are documented here. The format is based
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
 
+## [0.4.2] — 2026-06-17
+
+### Fixed
+
+- **Answering sweep decisions over an attach no longer strands you in the prompt pane.**
+  After answering the last deferred-work decision (e.g. DW-90, DW-95), the session hung in the
+  orchestrator window instead of handing the terminal back — you were never returned to your shell,
+  nor (when attached from tmux) switched back to your previous session. Two causes are fixed:
+  (1) the sweep had no return step after the decisions phase — its only return path
+  (`RETURN_TRAILER`) fired only once the whole process exited and you pressed Enter at the park
+  prompt, so a normal sweep left you watching bundles run with no way out. The sweep now hands the
+  terminal back the moment the current cycle's decisions are answered (`switch-client` back to your
+  pane, or `detach-client` from a plain shell) and continues running bundles in the background;
+  after a return it goes unattended so a later `--repeat` cycle can't block on input in a window no
+  one is viewing (new decisions defer as before, recorded for `bmad-auto decisions` or the next
+  attended sweep). (2) `bmad-auto attach` targeted the agent session and recorded no return target,
+  so the command the startup banner advertises never reached the decision prompt nor returned you;
+  it now lands on the orchestrator window when a decision is pending and wires up the same return
+  mechanism the TUI uses.
+
 ## [0.4.1] — 2026-06-16
 
 ### Fixed

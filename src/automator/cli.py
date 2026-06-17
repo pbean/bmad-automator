@@ -608,12 +608,29 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
+    from .tui import launch  # import-safe: launch.py has no textual imports
+
     project = _project(args)
     run_dir = project / RUNS_DIR / args.run_id if args.run_id else runs.latest_run_dir(project)
     if run_dir is None:
         print("no runs found", file=sys.stderr)
         return 1
-    return subprocess.call(runs.attach_argv(run_dir.name))
+    plan = launch.attach_plan(project, run_dir.name)
+    if plan is None:
+        print(f"nothing to attach for run {run_dir.name}", file=sys.stderr)
+        return 1
+    argv, return_window = plan
+    # Record where to send the client once the sweep finishes this cycle's
+    # decisions (see launch.return_attached_client), so answering them hands the
+    # terminal back instead of stranding the user in the orchestrator window.
+    if return_window is not None:
+        if os.environ.get("TMUX"):
+            pane = launch.current_pane_id()
+            if pane is not None:
+                launch.set_return_pane(return_window, pane)
+        else:
+            launch.set_return_pane(return_window, launch.RETURN_DETACH)
+    return subprocess.call(argv)
 
 
 def cmd_stop(args: argparse.Namespace) -> int:

@@ -289,6 +289,132 @@ def test_detach_client_argv(fake_run):
     assert fake_run.calls == [["tmux", "detach-client"]]
 
 
+def _return_fake(monkeypatch, *, win="@5", option="%9", switch_rc=0):
+    """Script tmux for return_attached_client: display-message -> window id,
+    show-options -> the recorded RETURN_OPTION, switch-client -> switch_rc."""
+    calls: list[list[str]] = []
+
+    def fake(argv, **kwargs):
+        calls.append(list(argv))
+        verb = argv[1]
+        if verb == "display-message":
+            out, rc = (f"{win}\n", 0) if win is not None else ("", 1)
+        elif verb == "show-options":
+            out, rc = (f"{option}\n" if option else "", 0)
+        elif verb == "switch-client" and argv[2] == "-t":
+            out, rc = "", switch_rc
+        else:
+            out, rc = "", 0
+        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake)
+    monkeypatch.setattr(launch.shutil, "which", lambda name: f"/usr/bin/{name}")
+    return calls
+
+
+def test_return_attached_client_switches_to_pane(monkeypatch):
+    calls = _return_fake(monkeypatch, option="%9")
+    assert launch.return_attached_client() is True
+    assert ["tmux", "switch-client", "-t", "%9"] in calls
+    assert ["tmux", "set-option", "-wu", "-t", "@5", "@bmad_return_pane"] in calls
+    assert ["tmux", "switch-client", "-l"] not in calls  # no fallback when -t works
+    assert not any(c[1] == "detach-client" for c in calls)
+
+
+def test_return_attached_client_switch_fallback(monkeypatch):
+    calls = _return_fake(monkeypatch, option="%9", switch_rc=1)
+    assert launch.return_attached_client() is True
+    assert ["tmux", "switch-client", "-l"] in calls
+
+
+def test_return_attached_client_detaches(monkeypatch):
+    calls = _return_fake(monkeypatch, option="detach")
+    assert launch.return_attached_client() is True
+    assert ["tmux", "detach-client"] in calls
+    assert ["tmux", "set-option", "-wu", "-t", "@5", "@bmad_return_pane"] in calls
+    assert not any(c[1] == "switch-client" for c in calls)
+
+
+def test_return_attached_client_noop_when_unset(monkeypatch):
+    calls = _return_fake(monkeypatch, option="")
+    assert launch.return_attached_client() is False
+    assert not any(c[1] in ("switch-client", "detach-client", "set-option") for c in calls)
+
+
+def test_return_attached_client_noop_without_tmux(monkeypatch):
+    ran: list = []
+    monkeypatch.setattr(launch.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **k: ran.append(a))
+    assert launch.return_attached_client() is False
+    assert ran == []  # never shells out when tmux is missing
+
+
+def test_decision_pending_true(tmp_path: Path):
+    from automator.journal import Journal
+
+    rd = tmp_path / "run"
+    j = Journal(rd)
+    j.append("triage-done")
+    j.append("decision-pending", dw_id="DW-90", question="?")
+    assert launch.decision_pending(rd) is True
+
+
+def test_decision_pending_false_after_answer(tmp_path: Path):
+    from automator.journal import Journal
+
+    rd = tmp_path / "run"
+    j = Journal(rd)
+    j.append("decision-pending", dw_id="DW-90", question="?")
+    j.append("decision-answered", dw_id="DW-90", key="1")
+    assert launch.decision_pending(rd) is False
+
+
+def test_decision_pending_false_when_empty(tmp_path: Path):
+    assert launch.decision_pending(tmp_path / "missing") is False
+
+
+def test_attach_plan_prefers_ctl_when_decision_pending(monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(launch, "ctl_window", lambda rid: "sweep-RID")
+    monkeypatch.setattr(launch, "session_exists", lambda s: True)
+    monkeypatch.setattr(launch, "decision_pending", lambda rd: True)
+    selected: list[str] = []
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: selected.append(w))
+    argv, return_window = launch.attach_plan(Path("/proj"), "RID")
+    assert argv == ["tmux", "attach", "-t", "=bmad-auto-ctl"]
+    assert return_window == "=bmad-auto-ctl:sweep-RID"
+    assert selected == ["sweep-RID"]
+
+
+def test_attach_plan_prefers_ctl_when_no_agent_session(monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(launch, "ctl_window", lambda rid: "sweep-RID")
+    monkeypatch.setattr(launch, "session_exists", lambda s: False)
+    monkeypatch.setattr(launch, "decision_pending", lambda rd: False)
+    monkeypatch.setattr(launch, "select_ctl_window", lambda w: None)
+    argv, return_window = launch.attach_plan(Path("/proj"), "RID")
+    assert argv == ["tmux", "attach", "-t", "=bmad-auto-ctl"]
+    assert return_window == "=bmad-auto-ctl:sweep-RID"
+
+
+def test_attach_plan_agent_session_when_no_decision(monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(launch, "ctl_window", lambda rid: None)
+    monkeypatch.setattr(launch, "session_exists", lambda s: True)
+    monkeypatch.setattr(launch, "decision_pending", lambda rd: False)
+    assert launch.attach_plan(Path("/proj"), "RID") == (
+        ["tmux", "attach", "-t", "=bmad-auto-RID"],
+        None,
+    )
+
+
+def test_attach_plan_none_when_nothing_to_attach(monkeypatch):
+    monkeypatch.setattr(launch, "ctl_window", lambda rid: None)
+    monkeypatch.setattr(launch, "session_exists", lambda s: False)
+    monkeypatch.setattr(launch, "decision_pending", lambda rd: False)
+    assert launch.attach_plan(Path("/proj"), "RID") is None
+
+
 def test_run_captured_merges_streams(monkeypatch):
     def fake(argv, **kwargs):
         assert argv[:3] == [sys.executable, "-m", "automator.cli"]
