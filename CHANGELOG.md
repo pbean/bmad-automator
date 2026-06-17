@@ -5,6 +5,24 @@ All notable changes to `bmad-automator` are documented here. The format is based
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
 
+## [0.4.1] — 2026-06-16
+
+### Fixed
+
+- **Worktree isolation is now actually usable.** Isolated runs (`[scm] isolation = "worktree"`)
+  died on the first session with `Unknown command: /bmad-auto-dev`. Two compounding causes are
+  fixed: (1) per-unit worktrees were mounted under the main repo's `.git/`
+  (`.git/automator-worktrees/`); a cwd inside `.git/` is treated as git-internal by Claude Code,
+  which then refuses to load the project's `bmad-auto-*` skills. Worktrees now live under the run
+  dir (`.automator/runs/<run_id>/worktrees/<unit>`), already gitignored and outside `.git/`.
+  (2) `git worktree add` checks out tracked files only, but the skill trees (`.claude/skills`,
+  `.agents/skills`) and signal hook are typically gitignored, so a fresh worktree never received
+  them. Each worktree is now provisioned with the bundled skills + signal hook after mount
+  (`install.provision_worktree`); skills are copied only when absent (never clobbering a tracked
+  skill tree), the hook is registered against the main repo's relay via an absolute path, and the
+  provisioned paths are added to the worktree's local git exclude so the unit's `git add -A` never
+  merges tool files back. Verified end-to-end with a live worktree-isolated sandbox run.
+
 ## [0.4.0] — 2026-06-16
 
 First release with **opt-in git-worktree isolation** for runs and sweeps. The default is
@@ -211,6 +229,7 @@ enforced in CI.
   implementation phase, driven by a Python control loop with hook-based session transport and
   resumable on-disk run state.
 
+[0.4.1]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.1
 [0.4.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.0
 [0.3.2]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.2
 [0.3.1]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.1
