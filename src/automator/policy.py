@@ -155,6 +155,13 @@ class ScmPolicy:
     # built yet, so any value > 1 is clamped to 1 in loads() — the knob exists
     # but is inert until the parallel scheduler lands.
     max_parallel: int = 1
+    # A `git worktree add` checks out tracked files only, so gitignored MCP/CLI
+    # configs are missing from every fresh worktree and isolated sessions can't
+    # reach their MCP server. seed_adapter_defaults copies each loaded adapter's
+    # own seed_files (e.g. claude -> .mcp.json/.claude/settings.json) into the
+    # worktree; worktree_seed adds extra project-specific paths on top.
+    seed_adapter_defaults: bool = True
+    worktree_seed: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # branch_per="run" shares a single branch across every unit in the run;
@@ -333,6 +340,10 @@ def loads(text: str) -> Policy:
         ),
         # Phase 5 parallel fan-out is unbuilt: clamp to 1 so the knob is inert.
         max_parallel=min(requested_parallel, 1),
+        seed_adapter_defaults=bool(
+            scm_d.get("seed_adapter_defaults", ScmPolicy.seed_adapter_defaults)
+        ),
+        worktree_seed=tuple(str(s) for s in scm_d.get("worktree_seed", ())),
     )
     if scm.isolation not in ISOLATION_MODES:
         raise PolicyError(
@@ -437,6 +448,13 @@ failed_diff_unlimited = false # true = capture the failed-unit diff with no size
 # story's commit. {story_key} and {run_id} are substituted. Empty = built-in default.
 commit_message_template = ""
 max_parallel = 1             # units in flight at once (parallel fan-out unbuilt; values > 1 clamp to 1)
+# A git worktree checks out tracked files only, so gitignored MCP/CLI configs are
+# absent from every fresh worktree and isolated sessions can't reach their MCP
+# server. seed_adapter_defaults copies each loaded adapter's own config files
+# (claude -> .mcp.json/.claude/settings.json, codex -> .codex/config.toml, etc.)
+# into the worktree; worktree_seed adds extra project-specific gitignored paths.
+seed_adapter_defaults = true # seed each loaded adapter's default gitignored configs into worktrees
+worktree_seed = []           # extra gitignored files to copy into each worktree, on top of adapter defaults
 
 [tui]
 # low_frame_rate = true caps Textual to 15fps and disables animations (sets

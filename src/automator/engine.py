@@ -309,8 +309,22 @@ class Engine:
         # A worktree checks out tracked files only, but the bmad-auto-* skill
         # trees + signal-hook config are typically gitignored, so they are absent
         # from the fresh checkout. Re-lay them into the worktree so the session
-        # finds /bmad-auto-dev and the Stop-signal hook fires.
-        provision_worktree(unit.path, self._worktree_profiles(), self.paths.repo_root)
+        # finds /bmad-auto-dev and the Stop-signal hook fires. Also seed the loaded
+        # adapters' gitignored MCP/CLI configs so isolated sessions can reach their
+        # MCP server (seed_adapter_defaults) plus any extra project-listed paths.
+        profiles = self._worktree_profiles()
+        scm = self.policy.scm
+        seeds: list[str] = []
+        if scm.seed_adapter_defaults:
+            for profile in profiles:
+                seeds.extend(profile.seed_files)
+        seeds.extend(scm.worktree_seed)
+        provision_worktree(
+            unit.path,
+            profiles,
+            self.paths.repo_root,
+            seed_files=list(dict.fromkeys(seeds)),  # dedupe, preserve order
+        )
         self.journal.append(
             "worktree-opened", story_key=task.story_key, branch=unit.branch, path=str(unit.path)
         )

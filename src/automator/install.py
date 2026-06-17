@@ -176,29 +176,57 @@ def _copy_skills(project: Path, trees: Sequence[str], force: bool) -> bool:
     return skipped_any
 
 
-def provision_worktree(worktree: Path, profiles: Sequence[CLIProfile], repo_root: Path) -> None:
+def provision_worktree(
+    worktree: Path,
+    profiles: Sequence[CLIProfile],
+    repo_root: Path,
+    seed_files: Sequence[str] = (),
+) -> None:
     """Make a freshly-created git worktree a self-sufficient bmad-auto project.
 
     A worktree checks out tracked files only, but the skill trees (.claude/skills,
-    .agents/skills) and hook config are typically gitignored, so they are absent
-    from the checkout. Without them the session can't find /bmad-auto-dev and the
-    Stop-signal hook never fires. Lay the bundled skills + signal hook into the
-    worktree for the active CLI profiles. Quiet (no stdout) — unlike `install_into`
-    this runs inside the engine loop under a TUI. No-op when `profiles` is empty.
+    .agents/skills), the hook config, and the project's gitignored MCP/CLI configs
+    are absent from the checkout. Without them the session can't find /bmad-auto-dev,
+    the Stop-signal hook never fires, and isolated sessions can't reach their MCP
+    server. Lay the bundled skills + signal hook into the worktree for the active
+    CLI profiles, and copy the `seed_files` configs in from the main repo. Quiet (no
+    stdout) — unlike `install_into` this runs inside the engine loop under a TUI.
+    No-op when there's nothing to do.
 
     Kept safe against the unit's eventual `git add -A` commit:
-    - skills are copied only when ABSENT, so a project that commits its own skill
-      tree (e.g. .agents/) keeps it untouched (no diff merged back);
+    - skills + seed files are copied only when ABSENT, so a project that commits its
+      own skill tree (e.g. .agents/) or config keeps it untouched (no diff merged back);
     - the hook points at the MAIN repo's already-installed relay via an absolute
       path (the relay locates the run dir from $BMAD_AUTO_RUN_DIR, not its own
-      location), so nothing is written into the worktree's .automator/.
-    Both skill trees and the per-CLI hook config live in dirs projects gitignore.
+      location), so nothing is written into the worktree's .automator/;
+    - everything we wrote is added to the worktree's local git exclude.
+    Skill trees, the per-CLI hook config, and the seeded configs all live in dirs
+    projects gitignore — but the exclude shields them even when a project doesn't.
+
+    seed_files are copied BEFORE the hook step so a seeded settings file that is
+    also a hook config_path (.claude/settings.json, .gemini/settings.json) keeps its
+    real content and just gets the Stop hook merged in, rather than being created empty.
     """
-    if not profiles:
+    if not profiles and not seed_files:
         return
     worktree = worktree.resolve()
-    relay = repo_root.resolve() / HOOK_SCRIPT_REL
+    repo_root = repo_root.resolve()
+    relay = repo_root / HOOK_SCRIPT_REL
     skills_root = resources.files("automator.data").joinpath("skills")
+
+    # project gitignored MCP/CLI configs: copy from the main repo when absent.
+    # Resolve-and-contain guards against an `..`/absolute entry escaping either tree.
+    seeded: list[str] = []
+    for rel in seed_files:
+        src = (repo_root / rel).resolve()
+        dst = (worktree / rel).resolve()
+        if not src.is_relative_to(repo_root) or not dst.is_relative_to(worktree):
+            continue
+        if not src.exists() or dst.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _copy_traversable(src, dst)
+        seeded.append(rel)
 
     # bundled skills into each CLI's skill tree (deduped: codex+gemini share one);
     # never clobber a skill the checkout already carries (tracked or pre-existing).
@@ -228,10 +256,12 @@ def provision_worktree(worktree: Path, profiles: Sequence[CLIProfile], repo_root
         if changed:
             config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
-    # Shield exactly the paths we wrote (skill trees + hook configs) from the
-    # unit's `git add -A`, in case a project doesn't gitignore its tool dirs.
+    # Shield exactly the paths we wrote (skill trees + hook configs + seeded
+    # configs) from the unit's `git add -A`, in case a project doesn't gitignore
+    # its tool dirs.
     patterns = {f"/{p.skill_tree}" for p in profiles}
     patterns |= {f"/{p.hooks.config_path}" for p in profiles}
+    patterns |= {f"/{rel}" for rel in seeded}
     _worktree_local_exclude(worktree, sorted(patterns))
 
 

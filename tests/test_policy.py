@@ -240,6 +240,19 @@ def test_scm_defaults_reproduce_today(tmp_path):
     assert pol.scm.failed_diff_unlimited is False
     assert pol.scm.commit_message_template == ""
     assert pol.scm.max_parallel == 1
+    # worktree config-seeding is on by default with no extra paths
+    assert pol.scm.seed_adapter_defaults is True
+    assert pol.scm.worktree_seed == ()
+
+
+def test_scm_worktree_seed_settings(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text(
+        "[scm]\nseed_adapter_defaults = false\n" 'worktree_seed = [".mcp.json", ".envrc"]\n'
+    )
+    pol = policy.load(p)
+    assert pol.scm.seed_adapter_defaults is False
+    assert pol.scm.worktree_seed == (".mcp.json", ".envrc")
 
 
 def test_scm_override(tmp_path):

@@ -237,6 +237,28 @@ _FIELDS: tuple[_Field, ...] = (
     ),
     _Field(
         "scm",
+        "seed_adapter_defaults",
+        "switch",
+        default=ScmPolicy.seed_adapter_defaults,
+        label="seed adapter configs",
+        description=(
+            "worktree mode: copy each loaded adapter's gitignored MCP/CLI configs "
+            "(.mcp.json, .claude/settings.json, .codex/config.toml …) into the worktree "
+            "so isolated sessions can reach their MCP server"
+        ),
+    ),
+    _Field(
+        "scm",
+        "worktree_seed",
+        "lines",
+        label="extra worktree seed files",
+        description=(
+            "worktree mode: additional project-relative gitignored files to copy into "
+            "each worktree, one per line — on top of the adapter defaults above"
+        ),
+    ),
+    _Field(
+        "scm",
         "commit_message_template",
         "str",
         placeholder="blank = built-in default; {story_key} / {run_id} substituted",
