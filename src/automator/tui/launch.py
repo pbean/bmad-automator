@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from .. import runs
+from ..journal import Journal
 
 CTL_SESSION = "bmad-auto-ctl"
 
@@ -114,6 +115,63 @@ def detach_client() -> None:
     """Detach the tmux client viewing the current session, handing the terminal
     back to the user. Processes in the session keep running."""
     _tmux("detach-client")
+
+
+def return_attached_client() -> bool:
+    """Hand an attached client back to its origin *now*, mid-process — the
+    RETURN_TRAILER move (see start_detached) executed while the window's command
+    keeps running in the background, instead of after it exits.
+
+    Reads the RETURN_OPTION recorded on the current window by set_return_pane:
+      - a pane id (%N): switch that client back there (`-l` fallback if it's gone);
+      - RETURN_DETACH: detach the client so a blocking `tmux attach` returns;
+      - unset/empty: nobody attached with a return target — do nothing.
+    The option is then cleared so the post-exit RETURN_TRAILER doesn't fire a
+    second time. Returns True iff a client was actually returned."""
+    if not tmux_available():
+        return False
+    win = _current_window_id()
+    if win is None:
+        return False
+    ret = _tmux("show-options", "-wqv", RETURN_OPTION).stdout.strip()
+    if not ret:
+        return False
+    if ret == RETURN_DETACH:
+        _tmux("detach-client")
+    elif _tmux("switch-client", "-t", ret).returncode != 0:
+        _tmux("switch-client", "-l")
+    _tmux("set-option", "-wu", "-t", win, RETURN_OPTION)
+    return True
+
+
+def decision_pending(run_dir: Path) -> bool:
+    """True when the run's sweep is currently blocked on an interactive decision
+    — its journal's last entry is a decision-pending announcement (the prompter
+    blocks on input right after writing it, so any later entry means it moved
+    on). Mirrors tui.data.pending_decision; kept here so the CLI can decide an
+    attach target without importing the textual-laden data module."""
+    entries = Journal(run_dir).entries()
+    return bool(entries) and entries[-1].get("kind") == "decision-pending"
+
+
+def attach_plan(project: Path, run_id: str) -> tuple[list[str], str | None] | None:
+    """Pick where an interactive attach should land for this run and which window
+    (if any) to record a return target on. Shared by the CLI `attach` command and
+    mirroring the TUI's action_attach logic: prefer the orchestrator's ctl window
+    when a sweep is blocked on a decision or no agent session is live, else the
+    live agent session. Returns (tmux argv, return_window) or None when there is
+    nothing to attach to."""
+    session = runs.session_name(run_id)
+    window = ctl_window(run_id)
+    agent_live = session_exists(session)
+    if window is not None and (
+        decision_pending(runs.run_dir_for(project, run_id)) or not agent_live
+    ):
+        select_ctl_window(window)
+        return runs.attach_target_argv(f"={CTL_SESSION}"), f"={CTL_SESSION}:{window}"
+    if agent_live:
+        return runs.attach_target_argv(f"={session}"), None
+    return None
 
 
 def kill_ctl_window(run_id: str) -> None:

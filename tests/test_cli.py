@@ -167,6 +167,80 @@ def test_status_surfaces_missed_decision_count(project, capsys):
     assert "decisions awaiting an answer: 1" in capsys.readouterr().out
 
 
+def test_attach_records_return_pane_inside_tmux(project, monkeypatch):
+    from automator.tui import launch
+
+    _make_run_with_decision(project, run_id="20260101-000000-aaaa")
+    monkeypatch.setattr(
+        launch,
+        "attach_plan",
+        lambda proj, rid: (
+            ["tmux", "switch-client", "-t", "=bmad-auto-ctl"],
+            "=bmad-auto-ctl:sweep-RID",
+        ),
+    )
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setattr(launch, "current_pane_id", lambda: "%3")
+    recorded: list = []
+    monkeypatch.setattr(launch, "set_return_pane", lambda w, p: recorded.append((w, p)))
+    called: list = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda argv: called.append(argv) or 0)
+
+    assert cli.main(["attach", "--project", str(project.project), "20260101-000000-aaaa"]) == 0
+    assert recorded == [("=bmad-auto-ctl:sweep-RID", "%3")]
+    assert called == [["tmux", "switch-client", "-t", "=bmad-auto-ctl"]]
+
+
+def test_attach_records_detach_outside_tmux(project, monkeypatch):
+    from automator.tui import launch
+
+    _make_run_with_decision(project, run_id="20260101-000000-aaaa")
+    monkeypatch.setattr(
+        launch,
+        "attach_plan",
+        lambda proj, rid: (
+            ["tmux", "attach", "-t", "=bmad-auto-ctl"],
+            "=bmad-auto-ctl:sweep-RID",
+        ),
+    )
+    monkeypatch.delenv("TMUX", raising=False)
+    recorded: list = []
+    monkeypatch.setattr(launch, "set_return_pane", lambda w, p: recorded.append((w, p)))
+    monkeypatch.setattr(cli.subprocess, "call", lambda argv: 0)
+
+    assert cli.main(["attach", "--project", str(project.project), "20260101-000000-aaaa"]) == 0
+    assert recorded == [("=bmad-auto-ctl:sweep-RID", launch.RETURN_DETACH)]
+
+
+def test_attach_agent_session_records_no_return(project, monkeypatch):
+    from automator.tui import launch
+
+    _make_run_with_decision(project, run_id="20260101-000000-aaaa")
+    monkeypatch.setattr(
+        launch,
+        "attach_plan",
+        lambda proj, rid: (["tmux", "attach", "-t", "=bmad-auto-20260101-000000-aaaa"], None),
+    )
+    recorded: list = []
+    monkeypatch.setattr(launch, "set_return_pane", lambda w, p: recorded.append((w, p)))
+    called: list = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda argv: called.append(argv) or 0)
+
+    assert cli.main(["attach", "--project", str(project.project), "20260101-000000-aaaa"]) == 0
+    assert recorded == []
+    assert called == [["tmux", "attach", "-t", "=bmad-auto-20260101-000000-aaaa"]]
+
+
+def test_attach_nothing_to_attach(project, monkeypatch, capsys):
+    from automator.tui import launch
+
+    _make_run_with_decision(project, run_id="20260101-000000-aaaa")
+    monkeypatch.setattr(launch, "attach_plan", lambda proj, rid: None)
+
+    assert cli.main(["attach", "--project", str(project.project), "20260101-000000-aaaa"]) == 1
+    assert "nothing to attach" in capsys.readouterr().err
+
+
 def test_sweep_dry_run_lists_open_entries(project, capsys):
     from conftest import write_ledger
 
