@@ -75,13 +75,14 @@ Which testarch skills become orchestrated vs. stay interactive?
 
 ## Integrate BMAD GDS game-test items
 
-**Status:** exploring · **Foundation:** opt-in `[engine]` game-engine layer landed (Unity, shared mode)
+**Status:** exploring · **Foundation:** opt-in `[engine]` game-engine layer landed (Unity, shared + per_worktree)
 
 The opt-in `[engine]` layer (`docs/FEATURES.md` → "Game-engine projects") already lets a Unity
 project run its dev/sweep cycle against a live Editor MCP in **shared** mode (agent works in place
-on the operator's open Editor; a readiness gate blocks until the Editor + MCP are up). Next steps:
-`per_worktree` mode (one managed Editor per worktree + MCP-skill seeding), batchmode verify, and
-Godot/Unreal plugins on the same TOML+scripts shape.
+on the operator's open Editor; a readiness gate blocks until the Editor + MCP are up) and in
+**per_worktree** mode (one managed Editor per worktree, with `Library`-cache symlinking,
+setup/teardown hooks, and MCP-skill seeding via `seed_globs`). Next steps: batchmode `verify_cmd`
+and Godot/Unreal plugins on the same TOML+scripts shape.
 
 The BMAD **GDS** module (game dev — Unity / Unreal / Godot) carries its own testing track via the
 `gametest` workflow (`_bmad/gds/workflows/gametest`). For game projects, the testarch/TEA pipeline

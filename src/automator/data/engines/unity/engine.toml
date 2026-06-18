@@ -17,7 +17,14 @@ editor_modes = ["shared", "per_worktree"]
 # the BMAD_AUTO_* env the engine injects.
 ready_cmd = 'python3 "{scripts}/unity_ready.py"'
 
-# --- per_worktree mode (Phase 2) -------------------------------------------
-# worktree_setup_cmd    = 'python3 "{scripts}/unity_setup.py"'
-# worktree_teardown_cmd = 'python3 "{scripts}/unity_teardown.py"'
-# seed_globs            = [".claude/skills/*"]   # copy MCP-generated skills into worktrees
+# --- per_worktree mode -----------------------------------------------------
+# One managed Unity Editor per worktree (set editor_mode = "per_worktree" and
+# [scm] isolation = "worktree"). setup launches the worktree's own Editor (whose
+# MCP port the IvanMurzak CLI derives from the project path, so it self-isolates
+# from your main Editor) and writes the worktree's .mcp.json; the readiness gate
+# then waits for it; teardown quits it on completion/pause. seed_globs copies the
+# MCP-generated skill tree (gitignored) into the worktree so the agent's CLI can
+# reach the Editor's tools.
+worktree_setup_cmd = 'python3 "{scripts}/unity_setup.py"'
+worktree_teardown_cmd = 'python3 "{scripts}/unity_teardown.py"'
+seed_globs = [".claude/skills/*"]

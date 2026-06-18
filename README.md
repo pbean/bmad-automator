@@ -368,7 +368,7 @@ A niche, opt-in `[engine]` layer for projects whose dev/sweep cycle needs the ag
 The core constraint: a live Editor MCP can only act on the folder its Editor has open, and Unity binds one Editor per folder and can't be repointed live. So `editor_mode` is coupled to `[scm] isolation`:
 
 - **`shared`** (default; requires `isolation = "none"`) — the agent works **in place** on the project your warm Editor already has open. Zero relaunches, full live MCP, the Editor stays open across stories. Before each unit runs, a **readiness gate** blocks until the Editor + MCP report ready (so a session never starts against a half-open Editor); if it never comes up the unit is deferred with an `ATTENTION` notice instead of failing mid-session.
-- **`per_worktree`** (requires `isolation = "worktree"`) — one managed Editor per worktree. _Planned (Phase 2); the policy validates it but the worktree-Editor lifecycle + MCP-skill seeding aren't wired yet._
+- **`per_worktree`** (requires `isolation = "worktree"`) — one **managed Editor per worktree**, run serially. For each unit a setup hook makes the fresh worktree a usable Unity project (launches its own Editor on the worktree path, writes the worktree's `.mcp.json`, symlinks `Library` to a persistent per-worktree cache), the readiness gate waits for it, the agent drives it, then a teardown hook quits that Editor — on completion **and** on pause/escalation, so it never outlives its worktree. The MCP server's generated skill tree is gitignored (absent from a fresh checkout), so the plugin seeds it into each worktree via `seed_globs`. If setup fails the unit is deferred rather than run against no Editor.
 
 Enable shared mode (the recommended Unity workflow) in `.automator/policy.toml`:
 
@@ -378,9 +378,12 @@ name = "unity"
 editor_mode = "shared"     # requires [scm] isolation = "none" (the default)
 mcp = "ivanmurzak"         # ivanmurzak | coplaydev
 ready_timeout_sec = 600
+ready_grace_sec = -1       # delay before the first readiness probe; -1 = auto
 ```
 
-The readiness gate runs the plugin's `ready_cmd` (`unity_ready.py`), which for `ivanmurzak` shells out to the Unity-MCP CLI's `wait-for-ready` and for `coplaydev` does a connectivity check against the MCP server. The exact CLI name/subcommand and endpoint move between MCP releases — verify against your installed version and override `ready_cmd` (or the whole plugin) under `.automator/engines/unity/` if they differ.
+The readiness gate runs the plugin's `ready_cmd` (`unity_ready.py`), which for `ivanmurzak` shells out to the Unity-MCP CLI's `wait-for-ready` (with an explicit `--timeout`, since the CLI's own default is only 120s) and for `coplaydev` does a connectivity check against the MCP server. It first waits `ready_grace_sec` for the Editor to start before probing — `-1` (the default) auto-picks **120s for a cold `per_worktree` Editor** and **0s for a warm `shared` one** — then retries so a fast connection-refused against a not-yet-listening Editor doesn't abort the gate; the grace counts against `ready_timeout_sec`. The exact CLI name/subcommand and endpoint move between MCP releases — verify against your installed version and override `ready_cmd` (or the whole plugin) under `.automator/engines/unity/` if they differ.
+
+For `per_worktree`, set `editor_mode = "per_worktree"` with `[scm] isolation = "worktree"`. The bundled Unity plugin wires the worktree-Editor lifecycle against the **IvanMurzak** CLI (`open` / `setup-mcp` / `close`, which key off the project path with auto port detection — verified against v0.81.0). The worktree's Editor reuses a persistent `Library` cache under the gitignored `.automator/cache/` to amortize the first import (a [Unity Accelerator](https://docs.unity3d.com/Manual/UnityAccelerator.html) helps further); set `unity_path` to pin the Editor binary, or `BMAD_AUTO_UNITY_LIBRARY_CACHE` to relocate the cache. A cold worktree Editor takes time to launch and import — bump `ready_grace_sec`/`ready_timeout_sec` if your project's first import runs long. CoplayDev's single shared-server model isn't wired for a managed per-worktree launch — point `worktree_setup_cmd`/`worktree_teardown_cmd` at your own scripts under `.automator/engines/unity/`, or use shared mode.
 
 ## Run state
 

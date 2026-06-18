@@ -19,11 +19,29 @@ breaking changes may land in a minor release.
   has open (Unity binds one Editor per folder and can't be repointed live), `editor_mode` is
   coupled to `[scm] isolation`: **`shared`** (requires `isolation = "none"`) runs the agent in
   place on the project the operator's warm Editor already has open — zero relaunches, full live
-  MCP; **`per_worktree`** (requires `isolation = "worktree"`) is validated but reserved for a
-  later release. Before each unit, a **readiness gate** runs the plugin's `ready_cmd` and blocks
-  until the Editor + MCP report ready (Unity: `wait-for-ready` for IvanMurzak, a connectivity
-  check for CoplayDev); on timeout the unit is deferred with an `ATTENTION` notice rather than
-  starting a session against a half-open Editor.
+  MCP; **`per_worktree`** (requires `isolation = "worktree"`) gives each unit its own managed
+  Editor (see below). Before each unit, a **readiness gate** runs the plugin's `ready_cmd` and
+  blocks until the Editor + MCP report ready (Unity: `wait-for-ready` for IvanMurzak, a
+  connectivity check for CoplayDev); on timeout the unit is deferred with an `ATTENTION` notice
+  rather than starting a session against a half-open Editor.
+- **Game-engine `per_worktree` mode (Unity).** With `editor_mode = "per_worktree"` and
+  `[scm] isolation = "worktree"`, each unit runs in its own git worktree with a dedicated managed
+  Editor: a per-worktree setup hook launches the Editor on the worktree path (the IvanMurzak CLI
+  derives the MCP port from that path, so the worktree's Editor self-isolates from the operator's
+  main one), writes the worktree's `.mcp.json`, and symlinks `Library` to a persistent
+  per-worktree cache under the gitignored `.automator/cache/` (never the operator's live
+  Library); the readiness gate then waits for it,
+  and a teardown hook quits the Editor on completion **and** on pause/escalation so it never
+  outlives its worktree. The MCP server's generated skill tree (gitignored, so absent from a
+  fresh checkout) is copied into each worktree via the plugin's new `seed_globs`. A setup failure
+  defers the unit instead of starting a session; only the IvanMurzak MCP is wired for a managed
+  launch (CoplayDev's shared-server model needs a project-local override). The readiness gate
+  waits a cold-launch **grace** (new `[engine] ready_grace_sec`, default `-1` = auto: 120s for
+  per_worktree, 0s for shared) before the first probe and passes an explicit `--timeout` to
+  `wait-for-ready` (the CLI's own default is only 120s), retrying so a fast connection-refused
+  against a not-yet-listening worktree Editor no longer aborts the gate early. `bmad-auto init`
+  now also gitignores `.automator/cache/` (alongside `.automator/runs/`) so the rebuildable
+  Library cache never lands in git.
 - **Worktree config seeding.** Under `[scm] isolation = "worktree"`, a `git worktree add`
   checks out tracked files only, so a project's gitignored MCP/CLI configs (`.mcp.json`,
   `.claude/settings.json`, `.codex/config.toml`, `.gemini/settings.json`) were absent from

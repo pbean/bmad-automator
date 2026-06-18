@@ -323,6 +323,7 @@ def test_engine_defaults_and_disabled():
     assert pol.engine.editor_mode == "shared"
     assert pol.engine.mcp == "ivanmurzak"
     assert pol.engine.ready_timeout_sec == 600
+    assert pol.engine.ready_grace_sec == -1  # auto (per-mode default in the plugin)
 
 
 def test_engine_load_values(tmp_path):
@@ -334,12 +335,14 @@ editor_mode = "shared"
 mcp = "coplaydev"
 unity_path = "/opt/Unity/Editor/Unity"
 ready_timeout_sec = 120
+ready_grace_sec = 90
 """)
     eng = policy.load(p).engine
     assert eng.name == "unity"
     assert eng.mcp == "coplaydev"
     assert eng.unity_path == "/opt/Unity/Editor/Unity"
     assert eng.ready_timeout_sec == 120
+    assert eng.ready_grace_sec == 90
 
 
 def test_engine_editor_mode_validated(tmp_path):

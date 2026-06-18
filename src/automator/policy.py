@@ -191,6 +191,12 @@ class EnginePolicy:
     unity_path: str = ""
     # how long the readiness gate blocks for the Editor + MCP to come up.
     ready_timeout_sec: int = 600
+    # seconds to wait before the FIRST readiness probe, to let a cold-launched
+    # Editor start before we check it (a fast-failing probe against a not-yet-
+    # listening Editor otherwise gives up early). Counts against ready_timeout_sec.
+    # -1 = auto: the plugin picks a per-mode default (per_worktree launches a cold
+    # Editor so it waits; shared reuses a warm one so it does not).
+    ready_grace_sec: int = -1
 
 
 @dataclass(frozen=True)
@@ -388,6 +394,7 @@ def loads(text: str) -> Policy:
         mcp=str(engine_d.get("mcp", EnginePolicy.mcp)),
         unity_path=str(engine_d.get("unity_path", EnginePolicy.unity_path)),
         ready_timeout_sec=int(engine_d.get("ready_timeout_sec", EnginePolicy.ready_timeout_sec)),
+        ready_grace_sec=int(engine_d.get("ready_grace_sec", EnginePolicy.ready_grace_sec)),
     )
     if engine.editor_mode not in EDITOR_MODES:
         raise PolicyError(
@@ -521,6 +528,8 @@ editor_mode = "shared"       # shared | per_worktree
 mcp = "ivanmurzak"           # which Editor MCP the plugin scripts target: ivanmurzak | coplaydev
 unity_path = ""              # Editor binary for a per_worktree launch ("" = auto-detect; unused in shared)
 ready_timeout_sec = 600      # how long the readiness gate waits for the Editor + MCP to come up
+ready_grace_sec = -1         # delay before the first readiness probe (lets a cold Editor start);
+                             # -1 = auto (per_worktree waits, shared does not). Counts against ready_timeout_sec.
 
 [tui]
 # low_frame_rate = true caps Textual to 15fps and disables animations (sets

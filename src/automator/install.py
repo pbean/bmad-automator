@@ -6,7 +6,8 @@
 - installs the bundled bmad-auto-* skills into each selected CLI's skill tree
   (.claude/skills for claude, .agents/skills for codex/gemini)
 - writes .automator/policy.toml from the template (if missing)
-- gitignores .automator/runs/
+- gitignores generated dirs: .automator/runs/ (per-run state) and
+  .automator/cache/ (engine plugins' rebuildable caches, e.g. the Unity Library)
 
 Every dialect registers the same relay script under the CLI's native event
 names while passing the canonical event name as the script argument, so the
@@ -181,6 +182,7 @@ def provision_worktree(
     profiles: Sequence[CLIProfile],
     repo_root: Path,
     seed_files: Sequence[str] = (),
+    seed_globs: Sequence[str] = (),
 ) -> None:
     """Make a freshly-created git worktree a self-sufficient bmad-auto project.
 
@@ -192,6 +194,12 @@ def provision_worktree(
     CLI profiles, and copy the `seed_files` configs in from the main repo. Quiet (no
     stdout) — unlike `install_into` this runs inside the engine loop under a TUI.
     No-op when there's nothing to do.
+
+    seed_globs are project-relative glob patterns (e.g. ".claude/skills/*") expanded
+    against the main repo; every match is copied into the worktree under the same
+    relative path, copy-when-absent like seed_files. A game-engine plugin uses these
+    to pull its MCP-generated skill tree (gitignored, so absent from the checkout)
+    into a per_worktree Editor's checkout.
 
     Kept safe against the unit's eventual `git add -A` commit:
     - skills + seed files are copied only when ABSENT, so a project that commits its
@@ -207,7 +215,7 @@ def provision_worktree(
     also a hook config_path (.claude/settings.json, .gemini/settings.json) keeps its
     real content and just gets the Stop hook merged in, rather than being created empty.
     """
-    if not profiles and not seed_files:
+    if not profiles and not seed_files and not seed_globs:
         return
     worktree = worktree.resolve()
     repo_root = repo_root.resolve()
@@ -227,6 +235,23 @@ def provision_worktree(
         dst.parent.mkdir(parents=True, exist_ok=True)
         _copy_traversable(src, dst)
         seeded.append(rel)
+
+    # glob-seeded trees (e.g. an engine plugin's MCP skill dirs): expand each
+    # pattern against the main repo and copy matches in, same contain guard +
+    # copy-when-absent semantics. rel is taken from the unresolved match so the
+    # worktree path mirrors the repo layout; resolve only guards containment.
+    for pattern in seed_globs:
+        for match in sorted(repo_root.glob(pattern)):
+            rel = match.relative_to(repo_root)
+            src = match.resolve()
+            dst = (worktree / rel).resolve()
+            if not src.is_relative_to(repo_root) or not dst.is_relative_to(worktree):
+                continue
+            if not src.exists() or dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _copy_traversable(src, dst)
+            seeded.append(str(rel))
 
     # bundled skills into each CLI's skill tree (deduped: codex+gemini share one);
     # never clobber a skill the checkout already carries (tracked or pre-existing).
@@ -316,16 +341,20 @@ def install_into(
         policy_path.write_text(POLICY_TEMPLATE, encoding="utf-8")
         print(f"  policy written: {policy_path}")
 
-    # 5. gitignore runs dir
+    # 5. gitignore generated dirs: per-run state (.automator/runs/) and the
+    # game-engine plugins' rebuildable caches, e.g. the per-worktree Unity Library
+    # (.automator/cache/). Both are large/ephemeral and must never be committed.
     gitignore = project / ".gitignore"
-    ignore_line = ".automator/runs/"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
-    if ignore_line not in existing.splitlines():
+    have = set(existing.splitlines())
+    to_add = [line for line in (".automator/runs/", ".automator/cache/") if line not in have]
+    if to_add:
         with gitignore.open("a", encoding="utf-8") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
-            f.write(ignore_line + "\n")
-        print(f"  gitignored: {ignore_line}")
+            f.write("\n".join(to_add) + "\n")
+        for line in to_add:
+            print(f"  gitignored: {line}")
 
     if skills_skipped:
         print("  some skills already present; re-run with --force-skills to overwrite")

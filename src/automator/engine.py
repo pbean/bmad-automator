@@ -91,6 +91,9 @@ class Engine:
     # The engine that installed the process-wide stop handlers; nested
     # auto-sweep runs (same process) see it set and let RunStopped propagate up.
     _stop_signals_owner: "Engine | None" = None
+    # bound on the best-effort per_worktree Editor teardown so a hung Editor-quit
+    # can't stall the whole loop for the full readiness budget on every unit.
+    _ENGINE_TEARDOWN_TIMEOUT = 120
 
     def __init__(
         self,
@@ -324,11 +327,19 @@ class Engine:
             for profile in profiles:
                 seeds.extend(profile.seed_files)
         seeds.extend(scm.worktree_seed)
+        # per_worktree engine plugin: also pull its MCP-generated skill tree +
+        # extra gitignored configs into the checkout so the worktree's Editor MCP
+        # is reachable (the agent's CLI finds the engine tool skills + client config).
+        engine_globs: list[str] = []
+        if self._engine is not None and self.policy.engine.editor_mode == "per_worktree":
+            seeds.extend(self._engine.seed_files)
+            engine_globs = list(self._engine.seed_globs)
         provision_worktree(
             unit.path,
             profiles,
             self.paths.repo_root,
             seed_files=list(dict.fromkeys(seeds)),  # dedupe, preserve order
+            seed_globs=engine_globs,
         )
         self.journal.append(
             "worktree-opened", story_key=task.story_key, branch=unit.branch, path=str(unit.path)
@@ -337,8 +348,19 @@ class Engine:
         prev = self.workspace
         self.workspace = unit.workspace
         try:
-            drive(task)
+            # per_worktree engine: launch the unit's managed Editor + wait for its
+            # MCP to come up before driving. setup/gate failure leaves the task
+            # DEFERRED and skips drive(); both fall through to _integrate_unit,
+            # which tears the (empty) worktree down via the DEFERRED path.
+            if self._engine_worktree_setup(task, unit.path) and self._engine_ready_gate(
+                task, worktree=unit.path
+            ):
+                drive(task)
         finally:
+            # always quit the managed Editor — on success, on a deferral, and on a
+            # RunPaused (spec gate / escalation) propagating through — before the
+            # workspace is restored, so the editor never outlives its worktree.
+            self._engine_worktree_teardown(task, unit.path)
             self.workspace = prev
         # reached only on a normal return (DONE or DEFERRED); a RunPaused from the
         # spec gate or an escalation propagates past here, leaving the worktree up.
@@ -603,7 +625,56 @@ class Engine:
             )
         return plugin
 
-    def _engine_ready_gate(self, task: StoryTask) -> bool:
+    def _run_engine_hook(
+        self,
+        command: str,
+        task: StoryTask,
+        *,
+        worktree: Path | None = None,
+        timeout: int | None = None,
+    ) -> tuple[int, str]:
+        """Run one rendered engine command with the BMAD_AUTO_* env the plugin
+        scripts read, returning (returncode, output-tail). Shared by the readiness
+        gate and the per_worktree setup/teardown hooks. ``worktree`` overrides the
+        cwd + BMAD_AUTO_WORKTREE (the engine swaps self.workspace mid-unit, so the
+        callers pass the unit path explicitly); it defaults to the active workspace."""
+        eng = self.policy.engine
+        plugin = self._engine
+        root = worktree if worktree is not None else self.workspace.root
+        limit = eng.ready_timeout_sec if timeout is None else timeout
+        env = dict(os.environ)
+        if plugin is not None:
+            env.update(plugin.env)
+        env.update(
+            {
+                "BMAD_AUTO_REPO_ROOT": str(self.paths.repo_root),
+                "BMAD_AUTO_WORKTREE": str(root),
+                "BMAD_AUTO_RUN_DIR": str(self.run_dir),
+                "BMAD_AUTO_STORY_KEY": task.story_key,
+                "BMAD_AUTO_ENGINE_MCP": eng.mcp,
+                "BMAD_AUTO_ENGINE_EDITOR_MODE": eng.editor_mode,
+                "BMAD_AUTO_ENGINE_READY_TIMEOUT": str(eng.ready_timeout_sec),
+                "BMAD_AUTO_ENGINE_READY_GRACE": str(eng.ready_grace_sec),
+                "BMAD_AUTO_UNITY_PATH": eng.unity_path,
+            }
+        )
+        try:
+            # operator-configured engine command (from the plugin TOML); shell=True
+            # is intentional, mirroring the deterministic verify commands.
+            proc = subprocess.run(  # nosec B602
+                command,
+                shell=True,
+                cwd=str(root),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=limit,
+            )
+            return proc.returncode, (proc.stdout + proc.stderr)[-2000:]
+        except subprocess.TimeoutExpired:
+            return -1, f"timed out after {limit}s"
+
+    def _engine_ready_gate(self, task: StoryTask, worktree: Path | None = None) -> bool:
         """Block until the engine's Editor + MCP report ready before a unit runs.
 
         Returns True to proceed; False when the gate fails — the unit is marked
@@ -612,38 +683,9 @@ class Engine:
         plugin = self._engine
         if plugin is None or not plugin.ready_cmd:
             return True
-        eng = self.policy.engine
         command = plugin.render(plugin.ready_cmd)
-        env = dict(os.environ)
-        env.update(plugin.env)
-        env.update(
-            {
-                "BMAD_AUTO_REPO_ROOT": str(self.paths.repo_root),
-                "BMAD_AUTO_WORKTREE": str(self.workspace.root),
-                "BMAD_AUTO_RUN_DIR": str(self.run_dir),
-                "BMAD_AUTO_STORY_KEY": task.story_key,
-                "BMAD_AUTO_ENGINE_MCP": eng.mcp,
-                "BMAD_AUTO_ENGINE_EDITOR_MODE": eng.editor_mode,
-                "BMAD_AUTO_ENGINE_READY_TIMEOUT": str(eng.ready_timeout_sec),
-                "BMAD_AUTO_UNITY_PATH": eng.unity_path,
-            }
-        )
         self.journal.append("engine-ready-wait", story_key=task.story_key, engine=plugin.name)
-        try:
-            # operator-configured engine command (from the plugin TOML); shell=True
-            # is intentional, mirroring the deterministic verify commands.
-            proc = subprocess.run(  # nosec B602
-                command,
-                shell=True,
-                cwd=self.workspace.root,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=eng.ready_timeout_sec,
-            )
-            rc, tail = proc.returncode, (proc.stdout + proc.stderr)[-2000:]
-        except subprocess.TimeoutExpired:
-            rc, tail = -1, f"timed out after {eng.ready_timeout_sec}s"
+        rc, tail = self._run_engine_hook(command, task, worktree=worktree)
         if rc == 0:
             self.journal.append("engine-ready", story_key=task.story_key, engine=plugin.name)
             return True
@@ -657,10 +699,62 @@ class Engine:
         self._save()
         return False
 
+    def _engine_worktree_setup(self, task: StoryTask, worktree: Path) -> bool:
+        """per_worktree: make the fresh worktree a usable engine project + launch
+        its managed Editor before the agent runs. Returns True to proceed; on
+        failure the unit is DEFERRED + a notification sent (mirrors the readiness
+        gate). No-op (True) outside per_worktree or when no setup_cmd is declared."""
+        plugin = self._engine
+        if (
+            plugin is None
+            or self.policy.engine.editor_mode != "per_worktree"
+            or not plugin.worktree_setup_cmd
+        ):
+            return True
+        command = plugin.render(plugin.worktree_setup_cmd)
+        self.journal.append("engine-setup", story_key=task.story_key, engine=plugin.name)
+        rc, tail = self._run_engine_hook(command, task, worktree=worktree)
+        if rc == 0:
+            self.journal.append("engine-setup-ok", story_key=task.story_key, engine=plugin.name)
+            return True
+        reason = f"engine {plugin.name!r} worktree setup failed (rc={rc}): {tail.strip()}"
+        self.journal.append("engine-setup-failed", story_key=task.story_key, error=reason)
+        gates.notify(
+            self.policy, self.run_dir, f"engine worktree setup failed: {task.story_key}", reason
+        )
+        task.defer_reason = reason
+        task.phase = Phase.DEFERRED
+        self._save()
+        return False
+
+    def _engine_worktree_teardown(self, task: StoryTask, worktree: Path) -> None:
+        """per_worktree: quit the unit's managed Editor + undo its setup. Best
+        effort — runs on success AND on pause/escalation so a live Editor is never
+        left dangling, and a teardown failure only logs (the unit's outcome stands).
+        No-op outside per_worktree or when no teardown_cmd is declared."""
+        plugin = self._engine
+        if (
+            plugin is None
+            or self.policy.engine.editor_mode != "per_worktree"
+            or not plugin.worktree_teardown_cmd
+        ):
+            return
+        command = plugin.render(plugin.worktree_teardown_cmd)
+        self.journal.append("engine-teardown", story_key=task.story_key, engine=plugin.name)
+        rc, tail = self._run_engine_hook(
+            command, task, worktree=worktree, timeout=self._ENGINE_TEARDOWN_TIMEOUT
+        )
+        if rc == 0:
+            self.journal.append("engine-teardown-ok", story_key=task.story_key, engine=plugin.name)
+        else:
+            self.journal.append(
+                "engine-teardown-failed", story_key=task.story_key, error=tail.strip()
+            )
+
     def _run_story(self, task: StoryTask) -> None:
         # shared-mode engine gate: the agent works in place, so the live Editor
         # must be up before any session starts. (per_worktree gates inside
-        # _run_isolated, after the worktree's Editor is launched — Phase 2.)
+        # _run_isolated, after that worktree's own Editor has been launched.)
         if self._engine is not None and self.policy.engine.editor_mode == "shared":
             if not self._engine_ready_gate(task):
                 return

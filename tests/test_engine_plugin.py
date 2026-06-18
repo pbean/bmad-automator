@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
+
 import pytest
 
 from automator.adapters.mock import MockAdapter
@@ -30,6 +33,14 @@ def test_builtin_unity_plugin_loads():
     assert set(unity.editor_modes) == {"shared", "per_worktree"}
     # scripts_dir points at the bundled plugin dir (for {scripts} substitution)
     assert unity.scripts_dir.replace("\\", "/").endswith("data/engines/unity")
+
+
+def test_builtin_unity_plugin_declares_per_worktree_hooks():
+    unity = get_engine("unity")
+    assert "unity_setup.py" in unity.worktree_setup_cmd
+    assert "unity_teardown.py" in unity.worktree_teardown_cmd
+    # MCP-generated skills are gitignored; seed them into per_worktree checkouts.
+    assert ".claude/skills/*" in unity.seed_globs
 
 
 def test_render_expands_scripts_placeholder():
@@ -133,6 +144,40 @@ def test_failed_gate_skips_session_in_run_story(project):
     engine._run_story(task)  # shared mode: gate fails -> defer, never drives
     assert task.phase == Phase.DEFERRED
     assert adapter.sessions == []  # no dev/review session was ever started
+
+
+# ------------------------------------------------ unity_ready cold-launch grace
+
+
+def _load_unity_ready():
+    path = os.path.join(get_engine("unity").scripts_dir, "unity_ready.py")
+    spec = importlib.util.spec_from_file_location("unity_ready_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_unity_ready_grace_auto_per_mode(monkeypatch):
+    mod = _load_unity_ready()
+    monkeypatch.delenv("BMAD_AUTO_ENGINE_READY_GRACE", raising=False)
+    # cold per_worktree Editor waits; warm shared Editor does not
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_EDITOR_MODE", "per_worktree")
+    assert mod._grace() == 120.0
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_EDITOR_MODE", "shared")
+    assert mod._grace() == 0.0
+    # explicit -1 is the same auto path
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_READY_GRACE", "-1")
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_EDITOR_MODE", "per_worktree")
+    assert mod._grace() == 120.0
+
+
+def test_unity_ready_grace_explicit_override(monkeypatch):
+    mod = _load_unity_ready()
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_EDITOR_MODE", "per_worktree")
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_READY_GRACE", "30")
+    assert mod._grace() == 30.0  # explicit value wins over the per-mode default
+    monkeypatch.setenv("BMAD_AUTO_ENGINE_READY_GRACE", "0")
+    assert mod._grace() == 0.0  # operator can force no grace even for per_worktree
 
 
 def test_unsupported_editor_mode_rejected_at_construction(project):

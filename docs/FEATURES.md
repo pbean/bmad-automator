@@ -72,8 +72,9 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 ### Game-engine projects (opt-in)
 
 - Niche `[engine]` layer for projects whose dev/sweep cycle drives a **live engine Editor** via an Editor MCP (Unity bundled; Godot/Unreal later). Off by default (`name = ""`). Plugins ship like CLI profiles — bundled TOML in `automator/data/engines/<name>/`, overridable under `.automator/engines/<name>/`.
-- `editor_mode` is coupled to `[scm] isolation` because a live Editor MCP can only act on the folder its Editor has open: **`shared`** (requires `isolation = "none"`) runs the agent in place on the project the operator's warm Editor already has open — zero relaunches, full live MCP; **`per_worktree`** (requires `isolation = "worktree"`) gives each worktree its own managed Editor (_validated but Phase 2; lifecycle not wired yet_).
+- `editor_mode` is coupled to `[scm] isolation` because a live Editor MCP can only act on the folder its Editor has open: **`shared`** (requires `isolation = "none"`) runs the agent in place on the project the operator's warm Editor already has open — zero relaunches, full live MCP; **`per_worktree`** (requires `isolation = "worktree"`) gives each worktree its own managed Editor.
 - Readiness gate: before each unit, the plugin's `ready_cmd` blocks until the Editor + MCP report ready (Unity: `wait-for-ready` for IvanMurzak, connectivity check for CoplayDev); on timeout the unit is deferred with an `ATTENTION` notice rather than starting a session against a half-open Editor.
+- `per_worktree` lifecycle (Unity/IvanMurzak): a setup hook launches the worktree's own Editor (MCP port auto-derived from the worktree path, so it self-isolates from the operator's main Editor), writes the worktree `.mcp.json`, and symlinks `Library` to a persistent per-worktree cache; the readiness gate then waits for it; a teardown hook quits the Editor on completion **and** on pause/escalation. The MCP-generated skill tree (gitignored) is copied into each worktree via the plugin's `seed_globs`; a setup failure defers the unit instead of running it against no Editor.
 
 ### Resumability & state
 
