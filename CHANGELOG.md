@@ -9,6 +9,21 @@ breaking changes may land in a minor release.
 
 ### Added
 
+- **Game-engine plugin layer (opt-in; Unity, shared mode).** A new `[engine]` policy section
+  adapts the dev/sweep cycle to projects that drive a live engine Editor through an Editor MCP
+  (e.g. a Unity project controlled via [IvanMurzak/Unity-MCP](https://github.com/IvanMurzak/Unity-MCP)
+  or [CoplayDev/unity-mcp](https://github.com/CoplayDev/unity-mcp)). Off by default
+  (`name = ""`) — normal projects are unaffected. Engine plugins ship like CLI profiles:
+  bundled TOML in `automator/data/engines/<name>/`, overridable per project under
+  `.automator/engines/<name>/`. Because a live Editor MCP can only act on the folder its Editor
+  has open (Unity binds one Editor per folder and can't be repointed live), `editor_mode` is
+  coupled to `[scm] isolation`: **`shared`** (requires `isolation = "none"`) runs the agent in
+  place on the project the operator's warm Editor already has open — zero relaunches, full live
+  MCP; **`per_worktree`** (requires `isolation = "worktree"`) is validated but reserved for a
+  later release. Before each unit, a **readiness gate** runs the plugin's `ready_cmd` and blocks
+  until the Editor + MCP report ready (Unity: `wait-for-ready` for IvanMurzak, a connectivity
+  check for CoplayDev); on timeout the unit is deferred with an `ATTENTION` notice rather than
+  starting a session against a half-open Editor.
 - **Worktree config seeding.** Under `[scm] isolation = "worktree"`, a `git worktree add`
   checks out tracked files only, so a project's gitignored MCP/CLI configs (`.mcp.json`,
   `.claude/settings.json`, `.codex/config.toml`, `.gemini/settings.json`) were absent from

@@ -317,6 +317,61 @@ def test_scm_invalid_values(tmp_path):
         policy.load(p)
 
 
+def test_engine_defaults_and_disabled():
+    pol = policy.load(None)
+    assert pol.engine.name == ""  # disabled by default
+    assert pol.engine.editor_mode == "shared"
+    assert pol.engine.mcp == "ivanmurzak"
+    assert pol.engine.ready_timeout_sec == 600
+
+
+def test_engine_load_values(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text("""
+[engine]
+name = "unity"
+editor_mode = "shared"
+mcp = "coplaydev"
+unity_path = "/opt/Unity/Editor/Unity"
+ready_timeout_sec = 120
+""")
+    eng = policy.load(p).engine
+    assert eng.name == "unity"
+    assert eng.mcp == "coplaydev"
+    assert eng.unity_path == "/opt/Unity/Editor/Unity"
+    assert eng.ready_timeout_sec == 120
+
+
+def test_engine_editor_mode_validated(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text('[engine]\nname = "unity"\neditor_mode = "live"\n')
+    with pytest.raises(policy.PolicyError, match="engine.editor_mode"):
+        policy.load(p)
+
+
+def test_shared_mode_rejects_worktree_isolation(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text(
+        '[engine]\nname = "unity"\neditor_mode = "shared"\n[scm]\nisolation = "worktree"\n'
+    )
+    with pytest.raises(policy.PolicyError, match="shared.*requires scm.isolation = 'none'"):
+        policy.load(p)
+
+
+def test_per_worktree_requires_worktree_isolation(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text('[engine]\nname = "unity"\neditor_mode = "per_worktree"\n')
+    with pytest.raises(policy.PolicyError, match="per_worktree.*requires scm.isolation"):
+        policy.load(p)
+
+
+def test_engine_constraints_skipped_when_disabled(tmp_path):
+    # name = "" leaves the editor_mode/isolation coupling unenforced
+    p = tmp_path / "policy.toml"
+    p.write_text('[engine]\neditor_mode = "shared"\n[scm]\nisolation = "worktree"\n')
+    assert policy.load(p).engine.name == ""
+
+
 def test_template_parses():
     import tomllib
 
@@ -324,6 +379,8 @@ def test_template_parses():
     assert doc["gates"]["mode"] == "per-epic"
     assert doc["review"]["enabled"] is True
     assert doc["scm"]["isolation"] == "none"
+    assert doc["engine"]["name"] == ""
+    assert doc["engine"]["editor_mode"] == "shared"
 
 
 def test_to_dict_roundtrips_for_snapshot():

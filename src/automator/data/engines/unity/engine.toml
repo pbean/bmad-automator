@@ -1,0 +1,23 @@
+# Bundled Unity game-engine plugin for bmad-auto.
+#
+# Opt in from .automator/policy.toml:
+#   [engine]
+#   name = "unity"
+#   editor_mode = "shared"      # agent works in place on your live Editor's checkout
+#   mcp = "ivanmurzak"          # ivanmurzak | coplaydev
+#
+# Override per project by copying this dir to .automator/engines/unity/ and
+# editing it (the project-local copy wins, and its dir becomes {scripts}).
+
+name = "unity"
+editor_modes = ["shared", "per_worktree"]
+
+# Readiness gate: block until the Unity Editor + MCP bridge are ready before any
+# dev/sweep session starts. The script branches on BMAD_AUTO_ENGINE_MCP and reads
+# the BMAD_AUTO_* env the engine injects.
+ready_cmd = 'python3 "{scripts}/unity_ready.py"'
+
+# --- per_worktree mode (Phase 2) -------------------------------------------
+# worktree_setup_cmd    = 'python3 "{scripts}/unity_setup.py"'
+# worktree_teardown_cmd = 'python3 "{scripts}/unity_teardown.py"'
+# seed_globs            = [".claude/skills/*"]   # copy MCP-generated skills into worktrees

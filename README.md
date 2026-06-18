@@ -361,6 +361,27 @@ Merge-back is always **serialized** — `max_parallel` is a validated knob clamp
 
 For a monorepo or any layout where the git root differs from the project dir, set an optional `repo_root` key in `_bmad/bmm/config.yaml` — it decouples where git/code work happens from where run state lives (defaults to the project dir).
 
+### Game-engine projects (Unity)
+
+A niche, opt-in `[engine]` layer for projects whose dev/sweep cycle needs the agent to drive a **live engine Editor** — e.g. a Unity project the agent manipulates through an Editor MCP ([IvanMurzak/Unity-MCP](https://github.com/IvanMurzak/Unity-MCP) or [CoplayDev/unity-mcp](https://github.com/CoplayDev/unity-mcp)). Normal projects leave `[engine] name = ""` and nothing changes. Engine plugins ship like CLI profiles: bundled TOML in `automator/data/engines/<name>/` (Unity included), overridable per project under `.automator/engines/<name>/`.
+
+The core constraint: a live Editor MCP can only act on the folder its Editor has open, and Unity binds one Editor per folder and can't be repointed live. So `editor_mode` is coupled to `[scm] isolation`:
+
+- **`shared`** (default; requires `isolation = "none"`) — the agent works **in place** on the project your warm Editor already has open. Zero relaunches, full live MCP, the Editor stays open across stories. Before each unit runs, a **readiness gate** blocks until the Editor + MCP report ready (so a session never starts against a half-open Editor); if it never comes up the unit is deferred with an `ATTENTION` notice instead of failing mid-session.
+- **`per_worktree`** (requires `isolation = "worktree"`) — one managed Editor per worktree. _Planned (Phase 2); the policy validates it but the worktree-Editor lifecycle + MCP-skill seeding aren't wired yet._
+
+Enable shared mode (the recommended Unity workflow) in `.automator/policy.toml`:
+
+```toml
+[engine]
+name = "unity"
+editor_mode = "shared"     # requires [scm] isolation = "none" (the default)
+mcp = "ivanmurzak"         # ivanmurzak | coplaydev
+ready_timeout_sec = 600
+```
+
+The readiness gate runs the plugin's `ready_cmd` (`unity_ready.py`), which for `ivanmurzak` shells out to the Unity-MCP CLI's `wait-for-ready` and for `coplaydev` does a connectivity check against the MCP server. The exact CLI name/subcommand and endpoint move between MCP releases — verify against your installed version and override `ready_cmd` (or the whole plugin) under `.automator/engines/unity/` if they differ.
+
 ## Run state
 
 Everything about a run lives in `.automator/runs/<run-id>/` (gitignored): `state.json` (resumable engine state), `journal.jsonl` (every decision), `events/` (hook signals), `tasks/<id>/` (per-session prompt + result + escalations), `logs/` (raw pane output, debugging only), `deferred/` (stashed specs from deferred stories), `resolve/<story>/` (escalation `context.json` + the resolve agent's `resolution.json`), `ATTENTION` (human-readable alerts).

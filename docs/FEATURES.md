@@ -69,6 +69,12 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 - Merge-back is serialized; `max_parallel` is a validated knob clamped to `1` until parallel fan-out is built. The `repo_root` key in `_bmad/bmm/config.yaml` (defaults to the project dir) decouples where git/code work happens from where run state lives (monorepos).
 - `commit_message_template` (`{story_key}` / `{run_id}` substituted) customizes story/bundle commit messages.
 
+### Game-engine projects (opt-in)
+
+- Niche `[engine]` layer for projects whose dev/sweep cycle drives a **live engine Editor** via an Editor MCP (Unity bundled; Godot/Unreal later). Off by default (`name = ""`). Plugins ship like CLI profiles — bundled TOML in `automator/data/engines/<name>/`, overridable under `.automator/engines/<name>/`.
+- `editor_mode` is coupled to `[scm] isolation` because a live Editor MCP can only act on the folder its Editor has open: **`shared`** (requires `isolation = "none"`) runs the agent in place on the project the operator's warm Editor already has open — zero relaunches, full live MCP; **`per_worktree`** (requires `isolation = "worktree"`) gives each worktree its own managed Editor (_validated but Phase 2; lifecycle not wired yet_).
+- Readiness gate: before each unit, the plugin's `ready_cmd` blocks until the Editor + MCP report ready (Unity: `wait-for-ready` for IvanMurzak, connectivity check for CoplayDev); on timeout the unit is deferred with an `ATTENTION` notice rather than starting a session against a half-open Editor.
+
 ### Resumability & state
 
 - Every run is a resumable on-disk state machine: `bmad-auto resume <run-id>` continues from a gate, escalation, or interruption.
@@ -109,7 +115,7 @@ See [README.md](../README.md) for the narrative overview and [setup-guide.md](se
 ### Configuration (`.automator/policy.toml`)
 
 - Single policy file written by `init`, snapshotted at run start (applies to new runs and resumes; editable live from the TUI).
-- Sections: `[gates]`, `[limits]`, `[verify]`, `[notify]`, `[review]`, `[adapter]` (+ per-stage), `[sweep]`, `[scm]` (worktree isolation + merge-back), `[tui]` (`low_frame_rate` for slow/SSH links).
+- Sections: `[gates]`, `[limits]`, `[verify]`, `[notify]`, `[review]`, `[adapter]` (+ per-stage), `[sweep]`, `[scm]` (worktree isolation + merge-back), `[engine]` (opt-in game-engine layer; off by default), `[tui]` (`low_frame_rate` for slow/SSH links).
 - Tunable limits: `max_review_cycles`, `max_dev_attempts`, `session_timeout_min`, `stop_without_result_nudges`, `max_tokens_per_story`.
 
 ### TUI dashboard
