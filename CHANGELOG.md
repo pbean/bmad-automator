@@ -37,6 +37,12 @@ breaking changes may land in a minor release.
   adapter's configs are now copied in before launch, via new `[scm]` knobs `seed_adapter_defaults`
   (default on) and `worktree_seed` (extra paths). Both are in the TUI settings editor.
 
+### Changed
+
+- Default `limits.session_timeout_min` raised from 45 to 90 minutes — the old default cut off
+  substantial units, especially MCP-driven Unity sessions where each Editor step is a slow
+  round-trip. Override per project under `[limits]`.
+
 ### Fixed
 
 - `bmad-auto cleanup` (and the TUI `c` action) no longer stops other projects' live runs. tmux

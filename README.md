@@ -276,7 +276,7 @@ retrospective = "notify"   # never | notify | auto
 [limits]
 max_review_cycles = 3
 max_dev_attempts = 2
-session_timeout_min = 45
+session_timeout_min = 90
 stop_without_result_nudges = 1   # times to re-prompt a session that stopped with no result.json
 max_tokens_per_story = 2000000
 cache_read_weight = 0.1    # cache reads bill at ~0.1x input everywhere; 1.0 = count raw

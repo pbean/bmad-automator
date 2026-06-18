@@ -33,7 +33,7 @@ class GatesPolicy:
 class LimitsPolicy:
     max_review_cycles: int = 3
     max_dev_attempts: int = 2
-    session_timeout_min: int = 45
+    session_timeout_min: int = 90
     stop_without_result_nudges: int = 1
     max_tokens_per_story: int = 2_000_000
     # weight of cache-read tokens in the budget check (1.0 = count raw)
@@ -442,7 +442,7 @@ retrospective = "notify"     # never | notify | auto (auto unsupported in v1)
 [limits]
 max_review_cycles = 3
 max_dev_attempts = 2
-session_timeout_min = 45
+session_timeout_min = 90
 stop_without_result_nudges = 1
 max_tokens_per_story = 2000000
 cache_read_weight = 0.1      # cache reads bill at ~0.1x input on all vendors; 1.0 = count raw

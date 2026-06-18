@@ -60,7 +60,7 @@ retrospective = "notify"
 [limits]
 max_review_cycles = 3
 max_dev_attempts = 2
-session_timeout_min = 45
+session_timeout_min = 90
 max_tokens_per_story = 2_000_000
 cache_read_weight = 0.1
 
