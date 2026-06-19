@@ -165,6 +165,138 @@ def test_merge_unknown_strategy_raises(project):
         verify.merge_branch(project.project, "main", strategy="bogus")
 
 
+def test_merge_preflight_refused_no_abort_tail(project, tmp_path):
+    """A merge git refuses at pre-flight (an untracked main-tree file would be
+    overwritten by an incoming file) creates no MERGE_HEAD: the error carries the
+    raw git text and NOT the misleading 'repo left mid-merge' tail, and leaves no
+    merge in progress."""
+    repo = project.project
+    wt = tmp_path / "wt"
+    verify.worktree_add(repo, wt, "feat", "main")
+    commit(wt, "leak.txt", "from branch\n", "feat adds leak.txt")
+    # same path appears untracked in the main tree -> git refuses pre-flight
+    (repo / "leak.txt").write_text("editor-leaked\n")
+
+    with pytest.raises(verify.GitError) as ei:
+        verify.merge_branch(repo, "feat", strategy="merge")
+    msg = str(ei.value)
+    assert "would be overwritten by merge" in msg
+    assert "repo left mid-merge" not in msg
+    assert not verify._merge_in_progress(repo)  # nothing to abort was ever started
+
+
+# ---------------------------------------------------- dirty_paths / incoming
+
+
+def test_dirty_paths_reports_untracked_and_modified(project):
+    repo = project.project
+    (repo / "src.txt").write_text("modified\n")  # tracked edit -> " M"
+    (repo / "new.txt").write_text("brand new\n")  # untracked -> "??"
+    dp = verify.dirty_paths(repo)
+    assert dp.get("new.txt") == "??"
+    assert dp.get("src.txt", "").strip() == "M"
+
+
+def test_dirty_paths_clean_tree_is_empty(project):
+    assert verify.dirty_paths(project.project) == {}
+
+
+def test_dirty_paths_ignores_policy_file(project):
+    repo = project.project
+    policy = repo / verify.POLICY_FILE_REL
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text("changed = true\n")
+    assert verify.dirty_paths(repo) == {}  # policy.toml excluded like worktree_clean
+
+
+def test_branch_incoming_paths(project, tmp_path):
+    repo = project.project
+    wt = tmp_path / "wt"
+    verify.worktree_add(repo, wt, "feat", "main")
+    commit(wt, "added.txt", "a\n", "feat adds")
+    (wt / "src.txt").write_text("changed\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "feat edits src")
+    incoming = verify.branch_incoming_paths(repo, "main", "feat")
+    assert incoming == {"added.txt", "src.txt"}
+
+
+# ---------------------------------------------------- clean_incoming_collisions
+
+
+def _branch_with(repo, tmp_path, *, adds=None, modifies=None):
+    """Cut a `feat` branch (worktree) that adds/modifies files, then mirror that
+    same dirt into the main checkout (untracked add / tracked-modified) to model
+    an Editor leak. Returns nothing; the main tree is left dirty."""
+    wt = tmp_path / "wt"
+    verify.worktree_add(repo, wt, "feat", "main")
+    for name, content in {**(adds or {}), **(modifies or {})}.items():
+        fp = wt / name
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content)
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "feat work")
+    verify.worktree_remove(repo, wt, force=True)
+
+
+def test_clean_incoming_collisions_cleans_within_branch_set(project, tmp_path):
+    repo = project.project
+    _branch_with(repo, tmp_path, adds={"leak.cs": "branch\n"}, modifies={"src.txt": "branch\n"})
+    # editor leaked the same files into the main tree
+    (repo / "leak.cs").write_text("editor leaked\n")  # untracked
+    (repo / "src.txt").write_text("editor edited\n")  # tracked-modified
+
+    cleaned = verify.clean_incoming_collisions(repo, "main", "feat")
+    assert sorted(cleaned) == ["leak.cs", "src.txt"]
+    assert not (repo / "leak.cs").exists()  # untracked leak deleted
+    assert (repo / "src.txt").read_text() == "original\n"  # restored to HEAD
+    assert verify.worktree_clean(repo)
+    # and the merge now lands cleanly
+    verify.merge_branch(repo, "feat", strategy="merge")
+    assert (repo / "leak.cs").read_text() == "branch\n"
+
+
+def test_clean_incoming_collisions_refuses_stray_dirt(project, tmp_path):
+    repo = project.project
+    _branch_with(repo, tmp_path, adds={"leak.cs": "branch\n"})
+    (repo / "leak.cs").write_text("editor leaked\n")  # within branch set
+    (repo / "operator.txt").write_text("real work\n")  # stray, NOT in branch set
+
+    with pytest.raises(verify.GitError) as ei:
+        verify.clean_incoming_collisions(repo, "main", "feat")
+    assert "operator.txt" in str(ei.value)
+    # nothing was cleaned — both files remain
+    assert (repo / "leak.cs").exists() and (repo / "operator.txt").exists()
+
+
+def test_clean_incoming_collisions_clean_tree_noop(project, tmp_path):
+    repo = project.project
+    _branch_with(repo, tmp_path, adds={"leak.cs": "branch\n"})
+    assert verify.clean_incoming_collisions(repo, "main", "feat") == []
+
+
+def test_clean_incoming_collisions_ignores_policy_file(project, tmp_path):
+    repo = project.project
+    _branch_with(repo, tmp_path, adds={"leak.cs": "branch\n"})
+    policy = repo / verify.POLICY_FILE_REL
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text("changed = true\n")  # dirty but excluded
+    assert verify.clean_incoming_collisions(repo, "main", "feat") == []
+    assert policy.read_text() == "changed = true\n"  # left untouched
+
+
+def test_clean_incoming_collisions_prunes_emptied_dirs(project, tmp_path):
+    repo = project.project
+    _branch_with(repo, tmp_path, adds={"Assets/Tests/Leak.cs": "branch\n"})
+    leak = repo / "Assets" / "Tests" / "Leak.cs"
+    leak.parent.mkdir(parents=True, exist_ok=True)
+    leak.write_text("editor leaked\n")  # untracked, in a fresh subtree
+
+    cleaned = verify.clean_incoming_collisions(repo, "main", "feat")
+    assert cleaned == ["Assets/Tests/Leak.cs"]
+    assert not (repo / "Assets").exists()  # emptied dirs pruned back to root
+
+
 # ---------------------------------------------------------------- capture_diff
 
 
