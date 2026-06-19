@@ -25,6 +25,11 @@ COMMAND_TIMEOUT_S = 30 * 60
 
 # Repo-relative posix path of the orchestrator config, for git pathspecs.
 POLICY_FILE_REL = POLICY_FILE.as_posix()
+# The orchestrator's own working dir (.automator/) — config, ledger, run state,
+# engine plugins. Excluded wholesale from merge-collision detection: none of it
+# is ever a unit branch's merged content, so a dirty .automator/ must neither
+# block a merge as "stray work" nor be auto-cleaned.
+AUTOMATOR_DIR_REL = POLICY_FILE.parent.as_posix()
 
 
 class GitError(Exception):
@@ -65,6 +70,19 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
         timeout=GIT_TIMEOUT_S,
     )
     return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _git_raw(repo: Path, *args: str) -> tuple[int, str]:
+    """Like `_git` but returns stdout verbatim (no strip, no stderr merge) — for
+    NUL-delimited (`-z`) output whose records can begin with a space (porcelain
+    status codes like ' M'), which `_git`'s strip() would corrupt."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
+    )
+    return proc.returncode, proc.stdout
 
 
 def rev_parse_head(repo: Path) -> str:
@@ -203,6 +221,107 @@ def worktree_list(repo: Path) -> list[Path]:
     return paths
 
 
+def dirty_paths(repo: Path) -> dict[str, str]:
+    """Repo-relative posix path -> two-char porcelain XY status for every dirty
+    entry in `repo`'s working tree. Excludes the orchestrator's own working dir
+    (.automator/) — config, ledger, run state, engine plugins — none of which is
+    ever a unit's merged content. NUL-delimited (`-z`) so paths with spaces/unicode
+    and rename forms parse without C-quoting; for a rename the *destination* path
+    (the one now on disk) is what's recorded. `-uall` lists individual untracked
+    files (not a collapsed parent dir) so each entry can be matched 1:1 against a
+    branch's incoming paths."""
+    rc, out = _git_raw(
+        repo, "status", "--porcelain", "-z", "-uall", "--", ".", f":(exclude){AUTOMATOR_DIR_REL}"
+    )
+    if rc != 0:
+        raise GitError(f"git status failed in {repo}")
+    tokens = out.split("\0")
+    result: dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok:
+            i += 1
+            continue
+        xy, path = tok[:2], tok[3:]
+        # rename/copy entries carry the original path as the next NUL field; the
+        # destination (`path` above) is what's on disk, so consume and skip it.
+        if "R" in xy or "C" in xy:
+            i += 1
+        result[path] = xy
+        i += 1
+    return result
+
+
+def branch_incoming_paths(repo: Path, target: str, branch: str) -> set[str]:
+    """The set of repo-relative posix paths a merge of `branch` into `target`
+    would introduce or modify (`git diff --name-only target branch`)."""
+    rc, out = _git_raw(repo, "diff", "--name-only", "-z", target, branch)
+    if rc != 0:
+        raise GitError(f"git diff --name-only {target} {branch} failed in {repo}")
+    return {p for p in out.split("\0") if p}
+
+
+def clean_incoming_collisions(repo: Path, target: str, branch: str) -> list[str]:
+    """Reconcile a target checkout dirtied by a per-worktree Unity Editor so the
+    merge of `branch` can proceed, returning the cleaned paths (empty when the
+    tree was already clean).
+
+    Background: with engine `editor_mode = "per_worktree"`, a competing Editor
+    can leak asset writes (`.cs.meta` GUIDs, asmdef auto-edits) into the *main*
+    checkout. The merge then aborts pre-flight ("local changes / untracked files
+    would be overwritten"). Those leaked copies are Editor-generated duplicates of
+    content already committed on `branch`, so cleaning them is safe — the merge
+    re-creates the canonical versions.
+
+    Guard: only paths that lie within the branch's incoming set are cleaned. Any
+    dirty path *outside* that set could be real operator work, so we refuse and
+    raise GitError naming the stray paths without touching anything.
+    """
+    dirty = dirty_paths(repo)
+    if not dirty:
+        return []
+    incoming = branch_incoming_paths(repo, target, branch)
+    stray = sorted(p for p in dirty if p not in incoming)
+    if stray:
+        raise GitError(
+            "the target checkout has uncommitted changes outside this branch's "
+            f"files (not introduced by the merge): {', '.join(stray)}"
+        )
+    repo_res = repo.resolve()
+    cleaned: list[str] = []
+    for path, xy in sorted(dirty.items()):
+        if xy.startswith("??"):  # untracked: delete it, then prune emptied dirs
+            fp = repo / path
+            fp.unlink(missing_ok=True)
+            parent = fp.parent
+            while parent.resolve() != repo_res and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+        else:  # tracked-modified: restore to the target's committed version
+            rc, out = _git(repo, "checkout", "--", path)
+            if rc != 0:
+                raise GitError(f"git checkout -- {path} failed in {repo}: {out}")
+        cleaned.append(path)
+    return cleaned
+
+
+def _merge_in_progress(repo: Path) -> bool:
+    """True when a merge is mid-flight (MERGE_HEAD exists). A merge git refused at
+    pre-flight (e.g. untracked files would be overwritten) leaves no MERGE_HEAD,
+    so there is nothing to `--abort`."""
+    rc, _ = _git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD")
+    return rc == 0
+
+
+def _tree_dirty_vs_head(repo: Path) -> bool:
+    """True when tracked tree/index differs from HEAD — i.e. a squash actually
+    touched things and needs a reset. A pre-flight-refused squash leaves HEAD's
+    tree intact, so this stays False and we skip the bogus reset."""
+    rc, _ = _git(repo, "diff", "--quiet", "HEAD", "--")
+    return rc != 0
+
+
 def merge_branch(
     repo: Path, branch: str, *, strategy: str = "merge", message: str | None = None
 ) -> None:
@@ -211,7 +330,10 @@ def merge_branch(
     strategy: "ff" (fast-forward only), "merge" (always a merge commit), or
     "squash" (collapse to one commit). Raises GitError on conflict or when an
     ff-only merge can't fast-forward, restoring the tree to its pre-merge state.
-    Assumes the target checkout is clean (the worktree pipeline guarantees it).
+    Expects the target checkout to be clean; the worktree pipeline reconciles
+    Editor-induced dirt first via `clean_incoming_collisions`. When git refuses
+    a merge at pre-flight (no MERGE_HEAD created) the tree was never touched, so
+    no abort/reset is attempted and the raw git error is raised verbatim.
     """
     if strategy == "ff":
         rc, out = _git(repo, "merge", "--ff-only", branch)
@@ -222,21 +344,23 @@ def merge_branch(
         msg = message or f"Merge branch '{branch}'"
         rc, out = _git(repo, "merge", "--no-ff", "-m", msg, branch)
         if rc != 0:
-            abort_rc, abort_out = _git(repo, "merge", "--abort")  # restore to pre-merge HEAD
             detail = f"git merge --no-ff {branch} failed in {repo} (conflict?): {out}"
-            if abort_rc != 0:
-                detail += f"; AND git merge --abort failed (repo left mid-merge): {abort_out}"
+            if _merge_in_progress(repo):  # only abort a merge that actually started
+                abort_rc, abort_out = _git(repo, "merge", "--abort")  # restore pre-merge HEAD
+                if abort_rc != 0:
+                    detail += f"; AND git merge --abort failed (repo left mid-merge): {abort_out}"
             raise GitError(detail)
         return
     if strategy == "squash":
         rc, out = _git(repo, "merge", "--squash", branch)
         if rc != 0:
-            # squash leaves no MERGE_HEAD to --abort; reset the conflicted index
-            # back to the (clean) target HEAD.
-            reset_rc, reset_out = _git(repo, "reset", "--hard", "HEAD")
             detail = f"git merge --squash {branch} failed in {repo} (conflict?): {out}"
-            if reset_rc != 0:
-                detail += f"; AND git reset --hard HEAD failed (tree not restored): {reset_out}"
+            # squash leaves no MERGE_HEAD; only reset if it actually modified the
+            # tree/index (a pre-flight refusal leaves HEAD's tree untouched).
+            if _tree_dirty_vs_head(repo):
+                reset_rc, reset_out = _git(repo, "reset", "--hard", "HEAD")
+                if reset_rc != 0:
+                    detail += f"; AND git reset --hard HEAD failed (tree not restored): {reset_out}"
             raise GitError(detail)
         msg = message or f"Squash-merge branch '{branch}'"
         rc, out = _git(repo, "commit", "-m", msg)

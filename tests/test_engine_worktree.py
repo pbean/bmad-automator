@@ -640,6 +640,75 @@ def test_per_worktree_teardown_runs_on_pause(project):
     assert "engine-teardown-ok" in journal_kinds(engine)
 
 
+def _leaking_dev_effect(project, story_key, *, leak_name, in_branch_set):
+    """A dev effect that does the normal worktree work AND simulates a per_worktree
+    Unity Editor leaking an asset write into the *main* checkout before merge.
+    When in_branch_set the branch also commits `leak_name` (so the leaked main-tree
+    copy collides with an incoming file — the recoverable case); otherwise the leak
+    is stray work the merge does not introduce."""
+    base = wt_dev_effect(project, story_key)
+
+    def effect(spec):
+        if in_branch_set:
+            (spec.cwd / leak_name).write_text(f"branch content for {story_key}\n")
+        result = base(spec)
+        # the competing main-repo Editor writes the asset into the main checkout
+        (project.project / leak_name).write_text("editor leaked\n")
+        return result
+
+    return effect
+
+
+def test_merge_auto_recovers_editor_dirtied_target(project):
+    """A unit whose own incoming file was leaked (untracked) into the main checkout
+    by a per_worktree Editor merges successfully after auto-clean, journaling
+    merge-target-cleaned."""
+    commit_sprint(project, {"1-1-a": "ready-for-dev"})
+    engine, _ = make_engine(
+        project,
+        [
+            _leaking_dev_effect(project, "1-1-a", leak_name="Leak.cs", in_branch_set=True),
+            wt_review_effect(project, "1-1-a", clean=True),
+        ],
+    )
+    summary = engine.run()
+
+    assert summary.done == 1 and not summary.paused
+    assert engine.state.tasks["1-1-a"].phase == Phase.DONE
+    # the branch's version of the leaked file landed on target
+    assert (project.project / "Leak.cs").read_text() == "branch content for 1-1-a\n"
+    assert worktree_clean(project.project)
+    kinds = journal_kinds(engine)
+    assert "merge-target-cleaned" in kinds and "unit-merged" in kinds
+    cleaned = next(e for e in engine.journal.entries() if e["kind"] == "merge-target-cleaned")
+    assert cleaned["paths"] == ["Leak.cs"]
+
+
+def test_merge_stray_dirt_escalates_with_clear_message(project):
+    """Dirt in the main checkout that is NOT part of the branch's incoming files
+    (possible real operator work) is never cleaned: the unit escalates with the
+    Editor-leak message and keeps its branch."""
+    commit_sprint(project, {"1-1-a": "ready-for-dev"})
+    engine, _ = make_engine(
+        project,
+        [
+            _leaking_dev_effect(project, "1-1-a", leak_name="stray.txt", in_branch_set=False),
+            wt_review_effect(project, "1-1-a", clean=True),
+        ],
+    )
+    summary = engine.run()
+
+    assert summary.paused and summary.escalated == 1
+    task = engine.state.tasks["1-1-a"]
+    assert task.phase == Phase.ESCALATED
+    reason = engine.state.paused_reason or ""
+    assert "not part of this branch" in reason and "stray.txt" in reason
+    # branch kept for manual merge; the stray file was left untouched
+    assert branch_exists(project.project, "automator/test-run/1-1-a")
+    assert (project.project / "stray.txt").read_text() == "editor leaked\n"
+    assert "merge-target-cleaned" not in journal_kinds(engine)
+
+
 def test_spec_file_serialized_relative_to_worktree():
     """A worktree task persists spec_file relative to its worktree so a kept run's
     state stays portable (no dangling absolute path into a pruned worktree)."""
