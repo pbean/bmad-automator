@@ -126,6 +126,65 @@ def test_provided_workflows_names():
     assert reg.provided_workflows() == {"p": ("doc",)}
 
 
+# ----------------------------------------------------- settings overlay
+
+
+def two_stage_manifest(name: str = "ts") -> PluginManifest:
+    """One workflow on each injection stage, both advisory by default — for
+    exercising the per-workflow settings overlay."""
+    return PluginManifest(
+        name=name,
+        api_version=1,
+        workflows=(
+            WorkflowSpec(name="td", stage="post_dev_phase", role="dev", prompt="/td"),
+            WorkflowSpec(name="nfr", stage="post_review_result", role="review", prompt="/nfr"),
+        ),
+    )
+
+
+def test_absent_settings_preserve_manifest_values():
+    # no settings declared -> byte-identical to the pre-overlay behaviour.
+    m = wf_manifest("p", blocking=True)
+    reg = PluginRegistry([LoadedPlugin(manifest=m)])  # settings defaults to {}
+    found = reg.workflows_for("post_dev_phase")
+    assert [(w.name, w.blocking) for _, w in found] == [("doc", True)]
+
+
+def test_setting_disables_one_workflow():
+    # td_enabled=False drops only that step; the other stage's workflow survives.
+    reg = PluginRegistry(
+        [LoadedPlugin(manifest=two_stage_manifest(), settings={"td_enabled": False})]
+    )
+    assert reg.workflows_for("post_dev_phase") == []
+    assert [w.name for _, w in reg.workflows_for("post_review_result")] == ["nfr"]
+
+
+def test_setting_flips_blocking_true_and_false():
+    # _blocking overrides the manifest flag in both directions.
+    on = PluginRegistry(
+        [LoadedPlugin(manifest=wf_manifest("p", blocking=False), settings={"doc_blocking": True})]
+    )
+    assert on.workflows_for("post_dev_phase")[0][1].blocking is True
+
+    off = PluginRegistry(
+        [LoadedPlugin(manifest=wf_manifest("p", blocking=True), settings={"doc_blocking": False})]
+    )
+    assert off.workflows_for("post_dev_phase")[0][1].blocking is False
+
+
+def test_workflow_stages_drops_fully_disabled_stage():
+    # disabling the only step at a stage removes that stage from the O(1) guard;
+    # the other stage stays.
+    reg = PluginRegistry(
+        [LoadedPlugin(manifest=two_stage_manifest(), settings={"td_enabled": False})]
+    )
+    assert reg.workflow_stages() == frozenset({"post_review_result"})
+
+    # absent settings keep both stages declared.
+    plain = PluginRegistry([LoadedPlugin(manifest=two_stage_manifest())])
+    assert plain.workflow_stages() == frozenset({"post_dev_phase", "post_review_result"})
+
+
 # ====================================================== engine integration
 
 

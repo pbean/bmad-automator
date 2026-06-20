@@ -108,6 +108,21 @@ class WorkflowSpec:
     ``{run_id}`` and ``{scripts}`` (the plugin's script dir). A ``blocking``
     workflow whose session does not complete defers the unit (it routes through
     the engine's existing defer primitive); a non-blocking one is advisory.
+
+    Settings overlay (manifest value is the default; a setting tunes it per run):
+    a plugin's resolved settings can override two of these fields by naming
+    convention, read in ``PluginRegistry.workflows_for``/``workflow_stages``:
+
+      * ``<name>_enabled`` (bool) — when explicitly ``false``, the step is
+        dropped entirely (no session injected, the stage falls out of the O(1)
+        injection guard if every step there is off).
+      * ``<name>_blocking`` (bool) — overrides this spec's ``blocking`` flag,
+        flipping the advisory/defer behaviour without editing the manifest.
+
+    ``<name>`` is this workflow's ``name``; declare matching ``[[settings]]`` so
+    operators can flip them from ``[plugins.<plugin>]`` in policy.toml. Absent
+    settings preserve the manifest values exactly — a plugin that declares none
+    is byte-identical to a plugin system without the overlay.
     """
 
     name: str

@@ -23,6 +23,7 @@ single place trust is enforced and failure is isolated:
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 
 from . import trust
@@ -151,10 +152,21 @@ class PluginRegistry:
         }
 
     def workflow_stages(self) -> frozenset[str]:
-        """Every stage some loaded plugin binds a workflow to. The engine reads
-        this once to precompute an O(1) injection guard — a run whose plugins
-        provide no workflows pays nothing at the per-stage check."""
-        return frozenset(w.stage for lp in self._loaded for w in lp.manifest.workflows)
+        """Every stage some loaded plugin binds a *still-enabled* workflow to. The
+        engine reads this once to precompute an O(1) injection guard — a run whose
+        plugins provide no workflows pays nothing at the per-stage check.
+
+        A workflow a setting has disabled (``<name>_enabled = false``) is dropped
+        here too, so the guard stays exact: when every step at a stage is turned
+        off the stage falls out of the set and the engine skips it entirely. This
+        mirrors the same skip in ``workflows_for`` (the settings-overlay
+        convention; see ``WorkflowSpec``)."""
+        return frozenset(
+            w.stage
+            for lp in self._loaded
+            for w in lp.manifest.workflows
+            if lp.settings.get(f"{w.name}_enabled") is not False
+        )
 
     def workflows_for(self, stage: str) -> list[tuple[LoadedPlugin, WorkflowSpec]]:
         """Every (plugin, workflow) injected at ``stage``, in registry order.
@@ -162,11 +174,21 @@ class PluginRegistry:
         Only *active* plugins contribute: a data-only/declarative plugin always,
         an in-process plugin only once enabled+constructed (instance built). An
         un-enabled or errored ``[python]`` plugin is inert — its workflows must
-        not fire any more than its module runs (same gate as ``_active_for_seeds``)."""
+        not fire any more than its module runs (same gate as ``_active_for_seeds``).
+
+        Settings overlay: a plugin's resolved settings can tune a workflow per
+        the ``<workflow-name>_enabled`` / ``<workflow-name>_blocking`` convention
+        (see ``WorkflowSpec``). ``<name>_enabled = false`` drops the step;
+        ``<name>_blocking`` overrides the manifest's ``blocking`` flag. Absent
+        settings preserve the manifest values exactly, so a plugin that declares
+        no such settings is byte-identical to the pre-overlay behaviour."""
         out: list[tuple[LoadedPlugin, WorkflowSpec]] = []
         for lp in self._active_for_seeds():
             for wf in lp.manifest.workflows_for(stage):
-                out.append((lp, wf))
+                if lp.settings.get(f"{wf.name}_enabled") is False:
+                    continue  # a setting can disable a step
+                blocking = bool(lp.settings.get(f"{wf.name}_blocking", wf.blocking))
+                out.append((lp, wf if blocking == wf.blocking else replace(wf, blocking=blocking)))
         return out
 
     def instances(self) -> list[Plugin]:
