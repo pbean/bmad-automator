@@ -14,6 +14,7 @@ from test_tui_app import until
 from textual.widgets import Collapsible, Input, Select, Switch
 
 from automator import policy as policy_mod
+from automator.plugins import load_plugins
 from automator.policy import POLICY_FILE, POLICY_TEMPLATE
 from automator.tui.app import BmadAutoApp
 from automator.tui.screens.dashboard import DashboardScreen
@@ -108,6 +109,42 @@ def test_save_creates_parent_and_leaves_no_tmp(tmp_path):
     doc.save(path)
     assert policy_mod.load(path).limits.max_dev_attempts == 3
     assert list(path.parent.iterdir()) == [path]
+
+
+def test_validate_with_project_enforces_plugin_coupling(tmp_path):
+    """Passing project= runs every enabled in-process plugin's self-validation
+    (the same check the engine runs at startup): unity's editor_mode='shared'
+    requires scm.isolation='none', a coupling a flat per-key schema can't express
+    and which loads()-only validation therefore misses."""
+    schemas = {"unity": load_plugins()["unity"].settings}
+    doc = PolicyDoc.load(tmp_path / "missing.toml")  # template-backed
+    doc.set("plugins", "enabled", ["unity"])
+    doc.set("plugins.unity", "editor_mode", "shared")
+    doc.set("scm", "isolation", "worktree")  # invalid with shared
+    # per-key validation alone can't see the coupling -> passes
+    assert doc.validate(schemas) is None
+    # with the project, the plugin's validate() rejects it
+    err = doc.validate(schemas, project=tmp_path)
+    assert err is not None and "isolation" in err
+
+
+def test_validate_with_project_accepts_valid_coupling(tmp_path):
+    schemas = {"unity": load_plugins()["unity"].settings}
+    doc = PolicyDoc.load(tmp_path / "missing.toml")
+    doc.set("plugins", "enabled", ["unity"])
+    doc.set("plugins.unity", "editor_mode", "per_worktree")
+    doc.set("scm", "isolation", "worktree")  # valid per_worktree combo
+    assert doc.validate(schemas, project=tmp_path) is None
+
+
+def test_validate_with_project_skips_disabled_plugin_coupling(tmp_path):
+    """A bad coupling for a plugin that is NOT enabled is not flagged — its
+    in-process module is never built, so there is nothing to self-validate."""
+    schemas = {"unity": load_plugins()["unity"].settings}
+    doc = PolicyDoc.load(tmp_path / "missing.toml")
+    doc.set("plugins.unity", "editor_mode", "shared")
+    doc.set("scm", "isolation", "worktree")  # would be invalid IF unity were enabled
+    assert doc.validate(schemas, project=tmp_path) is None
 
 
 # ----------------------------------------------------------- settings screen
@@ -206,22 +243,84 @@ def write_policy_enabling_unity(project) -> None:
     path.write_text('[plugins]\nenabled = ["unity"]\n', encoding="utf-8")
 
 
-async def test_settings_screen_unity_section_renders_when_enabled(project):
-    """With unity enabled, its plugin section renders with plugins-unity-* widgets;
-    with no plugin enabled the section is absent."""
+async def test_settings_screen_unity_roster_reveals_settings_on_enable(project):
+    """Unity (a trust-gated [python] plugin) appears in the Plugins roster with an
+    enable toggle. While off, its settings sub-collapsible is hidden so the roster
+    stays clean; flipping the toggle reveals it live (no save/reopen needed). With
+    the policy already enabling unity, its settings are visible on open."""
     write_policy(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
-        assert not screen.query("#plugins-unity-editor_mode")
+        assert screen.query_one("#plugin-enabled-unity", Switch).value is False
+        cfg = screen.query_one("#plugin-cfg-unity", Collapsible)
+        assert cfg.display is False  # settings hidden until enabled
+        screen.query_one("#plugin-enabled-unity", Switch).value = True
+        await pilot.pause()
+        assert cfg.display is True  # revealed live on enable
 
     write_policy_enabling_unity(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
-        titles = [str(c.title) for c in screen.query(Collapsible)]
-        assert any(t.startswith("unity") for t in titles)
-        assert screen.query("#plugins-unity-editor_mode")
+        assert screen.query_one("#plugin-enabled-unity", Switch).value is True
+        assert screen.query_one("#plugin-cfg-unity", Collapsible).display is True
+
+
+async def test_settings_screen_enable_toggle_roundtrip(project):
+    """Flipping a trust-gated plugin's enable toggle on writes [plugins] enabled;
+    flipping it off again empties the list. The default editor_mode='shared' is a
+    valid coupling with the default scm.isolation='none', so the save succeeds."""
+    write_policy(project)  # template: enabled = []
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        screen.query_one("#plugin-enabled-unity", Switch).value = True
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        assert policy_mod.load(project.project / POLICY_FILE).plugins.enabled == ("unity",)
+
+    write_policy_enabling_unity(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        screen.query_one("#plugin-enabled-unity", Switch).value = False
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        assert policy_mod.load(project.project / POLICY_FILE).plugins.enabled == ()
+
+
+async def test_settings_screen_enable_toggle_preserves_unmanaged_names(project):
+    """Saving the toggles never drops a name the UI doesn't manage (a data-only or
+    undiscovered plugin already trusted): only trust-gated toggles are reconciled."""
+    path = project.project / POLICY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[plugins]\nenabled = ["ghost"]\n', encoding="utf-8")
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        screen.query_one("#plugin-enabled-unity", Switch).value = True
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        assert set(policy_mod.load(path).plugins.enabled) == {"ghost", "unity"}
+
+
+async def test_settings_screen_blocks_invalid_plugin_coupling(project):
+    """editor_mode='shared' requires scm.isolation='none'. Pairing it with
+    'worktree' is rejected at save time — the engine's startup coupling check now
+    runs on the TUI save path — so the save is blocked and the screen stays open."""
+    write_policy_enabling_unity(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        screen.query_one("#plugins-unity-editor_mode", Select).value = "shared"
+        screen.query_one("#scm-isolation", Select).value = "worktree"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)  # save blocked
+        from textual.widgets import Static
+
+        assert "isolation" in str(screen.query_one("#errors", Static).content)
 
 
 async def test_settings_screen_unity_editor_mode_roundtrip(project):
@@ -284,15 +383,19 @@ def write_policy_enabling_example(project) -> None:
     path.write_text('[plugins]\nenabled = ["example"]\n', encoding="utf-8")
 
 
-async def test_disabled_plugin_section_is_absent(project):
-    """With no plugin enabled (template default), no plugin section renders."""
+async def test_data_only_plugin_renders_without_toggle(project):
+    """A data-only plugin (example: no [python]) is always active, so it appears in
+    the Plugins roster with no enable toggle and its settings are visible (not
+    hidden) by default."""
     write_policy(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
         titles = [str(c.title) for c in screen.query(Collapsible)]
-        assert not any("example" in t for t in titles)
-        assert not screen.query("#plugins-example-greeting")
+        assert any(t.startswith("example") for t in titles)
+        assert screen.query("#plugins-example-greeting")  # settings render
+        assert not screen.query("#plugin-enabled-example")  # data-only: no toggle
+        assert screen.query_one("#plugin-cfg-example", Collapsible).display is True
 
 
 async def test_enabled_plugin_section_renders_and_round_trips(project):
@@ -310,6 +413,26 @@ async def test_enabled_plugin_section_renders_and_round_trips(project):
         assert pol.plugin_setting("example", "greeting") == "howdy"
         # the trust allowlist is untouched by the settings write
         assert pol.plugins.enabled == ("example",)
+
+
+async def test_save_preserves_disabled_plugin_settings(project):
+    """A disabled plugin's existing [plugins.<name>] table is data, not collected
+    from its (hidden) widgets, so an unrelated save leaves it untouched."""
+    path = project.project / POLICY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[plugins]\nenabled = []\n\n[plugins.unity]\nmcp = "coplaydev"\n', encoding="utf-8"
+    )
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        assert screen.query_one("#plugin-cfg-unity", Collapsible).display is False  # hidden
+        screen.query_one("#limits-max_review_cycles", Input).value = "5"  # unrelated edit
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        pol = policy_mod.load(path)
+        assert pol.plugin_setting("unity", "mcp") == "coplaydev"  # preserved untouched
+        assert pol.plugins.enabled == ()  # still disabled
 
 
 # ----------------------------------------------- section collapse / expand-all

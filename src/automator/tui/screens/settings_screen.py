@@ -3,8 +3,13 @@
 The form is populated from the raw tomlkit document, so unset keys show
 default placeholders instead of baked-in values, and saving only touches keys
 the user actually changed — tomlkit keeps everything else, comments included,
-byte-identical. Validation is policy.loads() itself via PolicyDoc.validate();
-errors block the save and land in the strip above the buttons. Cleared fields
+byte-identical. Validation is policy.loads() itself via PolicyDoc.validate(),
+plus — on save — each enabled in-process plugin's coupling check (e.g. unity
+editor_mode↔scm.isolation), the same check the engine runs at startup; errors
+block the save and land in the strip above the buttons. A dedicated Plugins
+section is a roster of discovered plugins with enable toggles (their name in
+[plugins] enabled); a plugin's settings appear as a sub-collapsible only once it
+is enabled. Cleared fields
 delete their keys (unset = default / inherit); the adapter extra_args fields
 distinguish "use profile defaults" (override off → key absent) from "replace
 with this list" (override on, possibly empty — None ≠ []).
@@ -38,7 +43,7 @@ from textual.widgets import (
 
 from ... import policy as policy_mod
 from ...policy import POLICY_FILE
-from ...settings_schema import SettingSpec, build_registry
+from ...settings_schema import PluginInfo, SettingSpec, build_registry
 from ..settings import PolicyDoc
 
 # collect() sentinel for a field whose widget holds an unusable value
@@ -80,6 +85,28 @@ class SettingsScreen(Screen[None]):
     SettingsScreen .field TextArea.-editing {
         border: tall $accent;
     }
+    SettingsScreen .plugin-row {
+        height: auto;
+    }
+    SettingsScreen .plugin-row Switch {
+        margin: 0 1;
+    }
+    SettingsScreen .plugin-always {
+        width: 8;
+        padding: 1 1;
+        color: $text-muted;
+    }
+    SettingsScreen .plugin-name {
+        padding: 1 1;
+    }
+    SettingsScreen .plugin-divider {
+        padding: 1 1 0 1;
+        color: $text-muted;
+        text-style: italic;
+    }
+    SettingsScreen .plugin-cfg {
+        margin-left: 2;
+    }
     SettingsScreen #errors {
         display: none;
         margin-top: 1;
@@ -110,13 +137,14 @@ class SettingsScreen(Screen[None]):
 
     def __init__(self, project: Path, doc: PolicyDoc):
         super().__init__()
+        self._project = project
         self._path = project / POLICY_FILE
         self._doc = doc
         # The field/section list is generated from the TOML schema registry, not
-        # hardcoded: core sections plus a section for every enabled plugin that
-        # contributes settings. Which plugins are enabled comes from the policy
-        # under edit; an invalid doc still renders the core schema (on_mount then
-        # surfaces the validation error).
+        # hardcoded: core sections plus a PluginInfo for every discovered plugin
+        # (its enable state, whether it is trust-gated, and its settings fields).
+        # Enable state comes from the policy under edit; an invalid doc still
+        # renders the core schema (on_mount then surfaces the validation error).
         try:
             pol = policy_mod.loads(doc.dumps())
         except policy_mod.PolicyError:
@@ -142,6 +170,9 @@ class SettingsScreen(Screen[None]):
                 with Collapsible(title=section.title, collapsed=True):
                     for spec in section.fields:
                         yield from self._compose_field(spec)
+            if self._registry.plugins:
+                with Collapsible(title="Plugins", collapsed=True, id="plugins"):
+                    yield from self._compose_plugins()
             yield Static(id="errors")
             with Horizontal(classes="buttons"):
                 yield Button("save", variant="primary", id="save")
@@ -197,7 +228,49 @@ class SettingsScreen(Screen[None]):
         if spec.description:
             yield Static(spec.description, classes="fielddesc")
 
+    def _compose_plugins(self) -> ComposeResult:
+        """The Plugins section: a scannable roster of every discovered plugin with
+        an enable toggle (trust-gated) or an always-on note (data-only), then —
+        below the roster — a settings sub-collapsible per plugin that contributes
+        settings. A plugin's settings are revealed only while it is active (data-
+        only always; trust-gated once enabled); inactive ones are hidden by
+        on_mount and toggled live by on_switch_changed, so the roster stays clean."""
+        for info in self._registry.plugins:
+            with Horizontal(classes="plugin-row"):
+                if info.trust_needed:
+                    yield Switch(
+                        value=info.enabled,
+                        id=f"plugin-enabled-{info.name}",
+                        classes="plugin-enable",
+                    )
+                else:
+                    yield Static("on", classes="plugin-always")
+                label = f"{info.name} — {info.description}" if info.description else info.name
+                yield Static(label, classes="plugin-name")
+        configurable = [p for p in self._registry.plugins if p.fields]
+        if configurable:
+            yield Static("configure", classes="plugin-divider")
+            for info in configurable:
+                title = f"{info.name} — {info.description}" if info.description else info.name
+                with Collapsible(
+                    title=title, collapsed=True, id=f"plugin-cfg-{info.name}", classes="plugin-cfg"
+                ):
+                    for spec in info.fields:
+                        yield from self._compose_field(spec)
+
+    def _plugin_active(self, info: PluginInfo) -> bool:
+        """A data-only plugin is always active; a trust-gated one is active only
+        while its enable toggle is on (its module is what trust gates)."""
+        if not info.trust_needed:
+            return True
+        return self.query_one(f"#plugin-enabled-{info.name}", Switch).value
+
     def on_mount(self) -> None:
+        # Hide the settings of every plugin that isn't active yet, so a fresh open
+        # shows only the roster plus the active plugins' settings.
+        for info in self._registry.plugins:
+            if info.fields and not self._plugin_active(info):
+                self.query_one(f"#plugin-cfg-{info.name}", Collapsible).display = False
         self._show_errors(self._doc.validate(self._registry.plugin_schemas))
 
     # ------------------------------------------------------------ keyboard
@@ -258,6 +331,15 @@ class SettingsScreen(Screen[None]):
         if event.switch.has_class("argswitch") and event.switch.id:
             target = event.switch.id.removesuffix("-override")
             self.query_one(f"#{target}", Input).disabled = not event.value
+        elif event.switch.has_class("plugin-enable") and event.switch.id:
+            # Reveal/hide the plugin's settings live (a plugin with no settings has
+            # no config collapsible). Expand on reveal so they're immediately seen.
+            name = event.switch.id.removeprefix("plugin-enabled-")
+            if self.query(f"#plugin-cfg-{name}"):
+                cfg = self.query_one(f"#plugin-cfg-{name}", Collapsible)
+                cfg.display = event.value
+                if event.value:
+                    cfg.collapsed = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
@@ -324,16 +406,52 @@ class SettingsScreen(Screen[None]):
             return [str(item) for item in current] != desired
         return current != desired
 
+    def _save_enabled(self) -> None:
+        """Reconcile [plugins] enabled with the enable toggles. Only trust-gated
+        plugins carry a toggle; any other name already in the list (a data-only
+        plugin, or a plugin this checkout can't discover) is preserved so the
+        save never silently drops trust the UI doesn't manage. An absent key
+        stays absent when nothing is enabled (unset = nothing trusted)."""
+        toggles = {p.name for p in self._registry.plugins if p.trust_needed}
+        on = [
+            p.name
+            for p in self._registry.plugins
+            if p.trust_needed and self.query_one(f"#plugin-enabled-{p.name}", Switch).value
+        ]
+        current = self._doc.get("plugins", "enabled")
+        current_names = None if current is None else [str(x) for x in current]
+        preserved = [n for n in (current_names or []) if n not in toggles]
+        desired = preserved + on
+        if current_names is None:
+            if desired:
+                self._doc.set("plugins", "enabled", desired)
+        elif current_names != desired:
+            self._doc.set("plugins", "enabled", desired)
+
+    def _save_specs(self) -> list[SettingSpec]:
+        """Core fields plus only the *active* plugins' fields — a disabled plugin's
+        settings are never collected, so its defaults are not baked in and any
+        existing [plugins.<name>] table is left untouched (preserved as data)."""
+        specs = [f for s in self._registry.sections for f in s.fields]
+        for info in self._registry.plugins:
+            if self._plugin_active(info):
+                specs.extend(info.fields)
+        return specs
+
     def action_save(self) -> None:
         problems: list[str] = []
-        desired = {spec: self._collect(spec, problems) for spec in self._registry.fields()}
+        desired = {spec: self._collect(spec, problems) for spec in self._save_specs()}
         if problems:
             self._show_errors("\n".join(problems))
             return
         for spec, value in desired.items():
             if self._changed(spec, self._doc.get(spec.section, spec.key), value):
                 self._doc.set(spec.section, spec.key, value)
-        error = self._doc.validate(self._registry.plugin_schemas)
+        self._save_enabled()
+        # Pass the project so the round-trip also runs every enabled in-process
+        # plugin's coupling check (e.g. unity editor_mode↔scm.isolation), blocking
+        # an incompatible save the same way the engine fails fast at startup.
+        error = self._doc.validate(self._registry.plugin_schemas, project=self._project)
         if error:
             self._show_errors(error)
             return
