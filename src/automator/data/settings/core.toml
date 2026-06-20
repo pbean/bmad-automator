@@ -1,0 +1,279 @@
+# Core settings schema — presentation + widget hints for .automator/policy.toml.
+#
+# This file describes HOW each policy key is rendered in the settings UI (widget
+# kind, label, help text, select options, numeric bounds). It is NOT the source
+# of truth for defaults or validation: policy.py's frozen dataclasses are. So
+# defaults and select options are *referenced* from policy, never literal-ed:
+#
+#   default_ref = "ScmPolicy.merge_strategy"   ->  getattr(policy.ScmPolicy, "merge_strategy")
+#   options_ref = "MERGE_STRATEGIES"           ->  tuple(sorted(policy.MERGE_STRATEGIES))
+#
+# A sync test asserts every resolved default/option matches the dataclass, so
+# this file can never silently drift from the runtime model. Section and field
+# order here IS the render order in the settings screen.
+#
+# field.kind is the widget hint: select | int | float | str | switch | lines | args
+# (lines = newline-separated list; args = shlex token list with an override toggle).
+
+[[section]]
+name = "gates"
+description = "approval gates, escalation & retrospective behavior"
+[[section.field]]
+key = "mode"
+kind = "select"
+options_ref = "GATE_MODES"
+default_ref = "GatesPolicy.mode"
+[[section.field]]
+key = "retrospective"
+kind = "select"
+options_ref = "RETRO_MODES"
+default_ref = "GatesPolicy.retrospective"
+
+[[section]]
+name = "review"
+description = "separate adversarial review session toggle"
+[[section.field]]
+key = "enabled"
+kind = "switch"
+default_ref = "ReviewPolicy.enabled"
+label = "separate review session"
+description = "ON: triple review runs in a dedicated 2nd session · OFF: quick-dev runs its own tri-review inline, story straight to done"
+
+[[section]]
+name = "limits"
+description = "cycle/attempt caps, timeout & token budget"
+[[section.field]]
+key = "max_review_cycles"
+kind = "int"
+minimum = 1
+default_ref = "LimitsPolicy.max_review_cycles"
+[[section.field]]
+key = "max_dev_attempts"
+kind = "int"
+minimum = 1
+default_ref = "LimitsPolicy.max_dev_attempts"
+[[section.field]]
+key = "session_timeout_min"
+kind = "int"
+minimum = 1
+default_ref = "LimitsPolicy.session_timeout_min"
+[[section.field]]
+key = "stop_without_result_nudges"
+kind = "int"
+minimum = 0
+default_ref = "LimitsPolicy.stop_without_result_nudges"
+[[section.field]]
+key = "max_tokens_per_story"
+kind = "int"
+minimum = 1
+default_ref = "LimitsPolicy.max_tokens_per_story"
+[[section.field]]
+key = "cache_read_weight"
+kind = "float"
+minimum = 0.0
+maximum = 1.0
+default_ref = "LimitsPolicy.cache_read_weight"
+
+[[section]]
+name = "verify"
+description = "post-implementation verification commands"
+[[section.field]]
+key = "commands"
+kind = "lines"
+
+[[section]]
+name = "notify"
+description = "desktop & file notifications"
+[[section.field]]
+key = "desktop"
+kind = "switch"
+default_ref = "NotifyPolicy.desktop"
+[[section.field]]
+key = "file"
+kind = "switch"
+default_ref = "NotifyPolicy.file"
+
+[[section]]
+name = "adapter"
+description = "CLI client, model & bypass flags (base for all stages)"
+[[section.field]]
+key = "name"
+kind = "str"
+placeholder = "CLI profile — default: claude"
+[[section.field]]
+key = "model"
+kind = "str"
+placeholder = "CLI default model"
+[[section.field]]
+key = "extra_args"
+kind = "args"
+[[section.field]]
+key = "cleanup_session_on_finish"
+kind = "switch"
+default_ref = "AdapterPolicy.cleanup_session_on_finish"
+
+# Per-stage adapter overrides. One section per [adapter.dev|review|triage] table,
+# expanded from this single template by the STAGES loop so they never drift.
+[[section]]
+name = "adapter.{stage}"
+expand_stages = true
+description = "{stage}-stage adapter overrides"
+[[section.field]]
+key = "name"
+kind = "str"
+placeholder = "inherit from [adapter]"
+[[section.field]]
+key = "model"
+kind = "str"
+placeholder = "inherit / client default"
+[[section.field]]
+key = "extra_args"
+kind = "args"
+
+[[section]]
+name = "sweep"
+description = "deferred-work sweep automation"
+[[section.field]]
+key = "auto"
+kind = "select"
+options_ref = "SWEEP_AUTO_MODES"
+default_ref = "SweepPolicy.auto"
+[[section.field]]
+key = "max_bundles"
+kind = "int"
+minimum = 1
+default_ref = "SweepPolicy.max_bundles"
+[[section.field]]
+key = "max_triage_attempts"
+kind = "int"
+minimum = 1
+default_ref = "SweepPolicy.max_triage_attempts"
+[[section.field]]
+key = "repeat"
+kind = "switch"
+default_ref = "SweepPolicy.repeat"
+[[section.field]]
+key = "max_cycles"
+kind = "int"
+minimum = 1
+default_ref = "SweepPolicy.max_cycles"
+
+[[section]]
+name = "scm"
+description = "git isolation, branching & merge-back"
+[[section.field]]
+key = "isolation"
+kind = "select"
+options_ref = "ISOLATION_MODES"
+default_ref = "ScmPolicy.isolation"
+description = "none: work in place on the checked-out branch (default) · worktree: run each story in its own git worktree, merge back to the target branch"
+[[section.field]]
+key = "branch_per"
+kind = "select"
+options_ref = "BRANCH_PER_MODES"
+default_ref = "ScmPolicy.branch_per"
+description = "worktree mode: one branch per story, or one shared branch per run (run forces delete-branch off so the shared branch survives)"
+[[section.field]]
+key = "target_branch"
+kind = "str"
+placeholder = "default: the branch checked out at run start"
+description = "worktree mode: branch all units merge back into (created if missing)"
+[[section.field]]
+key = "merge_strategy"
+kind = "select"
+options_ref = "MERGE_STRATEGIES"
+default_ref = "ScmPolicy.merge_strategy"
+description = "worktree mode: how a unit branch lands on the target — ff, merge, or squash"
+[[section.field]]
+key = "delete_branch"
+kind = "switch"
+default_ref = "ScmPolicy.delete_branch"
+description = "worktree mode: delete the unit branch after a successful merge"
+[[section.field]]
+key = "keep_failed"
+kind = "switch"
+default_ref = "ScmPolicy.keep_failed"
+description = "worktree mode: keep a failed unit's worktree + branch mounted for inspection"
+[[section.field]]
+key = "seed_adapter_defaults"
+kind = "switch"
+default_ref = "ScmPolicy.seed_adapter_defaults"
+label = "seed adapter configs"
+description = "worktree mode: copy each loaded adapter's gitignored MCP/CLI configs (.mcp.json, .claude/settings.json, .codex/config.toml …) into the worktree so isolated sessions can reach their MCP server"
+[[section.field]]
+key = "worktree_seed"
+kind = "lines"
+label = "extra worktree seed files"
+description = "worktree mode: additional project-relative gitignored files to copy into each worktree, one per line — on top of the adapter defaults above"
+[[section.field]]
+key = "commit_message_template"
+kind = "str"
+placeholder = "blank = built-in default; {story_key} / {run_id} substituted"
+label = "commit message template"
+description = "commit message dev sessions use for a story/bundle commit when set"
+[[section.field]]
+key = "failed_diff_max_mb"
+kind = "int"
+minimum = 1
+default_ref = "ScmPolicy.failed_diff_max_mb"
+label = "failed-diff size cap (MB)"
+description = "per-file size limit for untracked files captured into a kept-failed unit's changes.patch · oversized files are skipped with a marker"
+[[section.field]]
+key = "failed_diff_unlimited"
+kind = "switch"
+default_ref = "ScmPolicy.failed_diff_unlimited"
+label = "uncap failed-diff size"
+description = "⚠ ON: capture failed-unit diffs with NO size limit (overrides the cap above) — may produce very large patches; a warning is logged when active"
+
+[[section]]
+name = "engine"
+label = "Game Engine"
+description = "opt-in layer for game projects driving a live Editor via MCP (Unity)"
+[[section.field]]
+key = "name"
+kind = "str"
+default_ref = "EnginePolicy.name"
+placeholder = "'' = disabled"
+label = "plugin name"
+description = "game-engine plugin to enable — '' disables the layer (default); 'unity' is bundled; a custom plugin lives under .automator/engines/<name>/"
+[[section.field]]
+key = "editor_mode"
+kind = "select"
+options_ref = "EDITOR_MODES"
+default_ref = "EnginePolicy.editor_mode"
+description = "shared → agent works in place on your live Editor (needs scm.isolation = none); per_worktree → one managed Editor per worktree (needs isolation = worktree)"
+[[section.field]]
+key = "mcp"
+kind = "select"
+options = ["ivanmurzak", "coplaydev"]
+default_ref = "EnginePolicy.mcp"
+label = "Editor MCP"
+description = "which Editor MCP server the plugin's scripts target"
+[[section.field]]
+key = "unity_path"
+kind = "str"
+default_ref = "EnginePolicy.unity_path"
+placeholder = "'' = auto-detect"
+description = "explicit Editor binary for a per_worktree launch; '' auto-detects · ignored in shared mode (your own Editor is reused)"
+[[section.field]]
+key = "ready_timeout_sec"
+kind = "int"
+minimum = 1
+default_ref = "EnginePolicy.ready_timeout_sec"
+description = "how long the readiness gate blocks for the Editor + MCP to come up"
+[[section.field]]
+key = "ready_grace_sec"
+kind = "int"
+minimum = -1
+default_ref = "EnginePolicy.ready_grace_sec"
+description = "delay before the first readiness probe; -1 = auto (120s cold per_worktree, 0s warm shared) · counts against ready_timeout_sec"
+
+[[section]]
+name = "tui"
+description = "dashboard rendering (slow-link / SSH tuning)"
+[[section.field]]
+key = "low_frame_rate"
+kind = "switch"
+default_ref = "TuiPolicy.low_frame_rate"
+label = "low frame rate"
+description = "cap to 15fps + disable animations — fixes repaint tearing/garbage over slow or SSH links · takes effect next time the TUI launches"

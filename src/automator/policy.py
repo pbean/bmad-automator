@@ -208,6 +208,13 @@ class PluginsPolicy:
     # executed unless its name appears here. Absent table = no plugins trusted,
     # which reproduces today's behavior exactly.
     enabled: tuple[str, ...] = ()
+    # Per-plugin settings, parsed from the [plugins.<name>] sub-tables. Each
+    # value is the raw settings dict for that plugin; the plugin's own schema
+    # gives the keys meaning. Read through Policy.plugin_setting(). A plugin
+    # need not be in `enabled` to carry settings here (settings are data, only
+    # in-process [python] is trust-gated), but the settings UI renders a
+    # plugin's section only when it is enabled.
+    settings: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -226,6 +233,12 @@ class Policy:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def plugin_setting(self, name: str, key: str, default: Any = None) -> Any:
+        """A single setting for plugin ``name`` from its [plugins.<name>] table,
+        or ``default`` when unset. The plugin's schema supplies the real default
+        when this is called with the schema default as ``default``."""
+        return self.plugins.settings.get(name, {}).get(key, default)
 
 
 def _section(doc: dict[str, Any], name: str) -> dict[str, Any]:
@@ -247,6 +260,33 @@ def _stage_adapter(adapter_d: dict[str, Any], key: str) -> StageAdapterPolicy:
     )
 
 
+def _validate_plugin_settings(name: str, raw: dict[str, Any], specs: Any) -> None:
+    """Validate a [plugins.<name>] table against its plugin's setting specs
+    (objects exposing key/type/options). Unknown keys and type/option mismatches
+    raise PolicyError; a None schema means the plugin isn't loaded here, skip."""
+    if specs is None:
+        return
+    by_key = {s.key: s for s in specs}
+    for key, value in raw.items():
+        spec = by_key.get(key)
+        if spec is None:
+            raise PolicyError(f"plugins.{name}: unknown setting {key!r}")
+        kind = spec.type
+        if kind == "bool" and not isinstance(value, bool):
+            raise PolicyError(f"plugins.{name}.{key} must be a boolean")
+        # bool is a subclass of int; reject it explicitly for numeric kinds.
+        if kind == "int" and (isinstance(value, bool) or not isinstance(value, int)):
+            raise PolicyError(f"plugins.{name}.{key} must be an integer")
+        if kind == "float" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise PolicyError(f"plugins.{name}.{key} must be a number")
+        if kind == "str" and not isinstance(value, str):
+            raise PolicyError(f"plugins.{name}.{key} must be a string")
+        if kind == "select" and value not in spec.options:
+            raise PolicyError(
+                f"plugins.{name}.{key} must be one of {list(spec.options)}: got {value!r}"
+            )
+
+
 def load(path: Path | None) -> Policy:
     """Load policy from a TOML file; a missing file yields all defaults."""
     if path is None or not path.is_file():
@@ -257,8 +297,15 @@ def load(path: Path | None) -> Policy:
         raise PolicyError(f"{path}: {e}") from e
 
 
-def loads(text: str) -> Policy:
-    """Parse and validate policy TOML text; empty text yields all defaults."""
+def loads(text: str, plugin_schemas: dict[str, Any] | None = None) -> Policy:
+    """Parse and validate policy TOML text; empty text yields all defaults.
+
+    ``plugin_schemas`` optionally maps a plugin name to its sequence of setting
+    specs (objects with ``key``/``type``/``options`` attributes). When given,
+    every present ``[plugins.<name>]`` table whose plugin is in the mapping is
+    validated against that schema: unknown keys and type/option mismatches raise
+    PolicyError. Plugin tables without a supplied schema pass through untouched
+    (a plugin may not be loaded in every context that reads policy)."""
     try:
         doc: dict[str, Any] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -433,7 +480,15 @@ def loads(text: str) -> Policy:
     raw_enabled = plugins_d.get("enabled", ())
     if isinstance(raw_enabled, str) or not isinstance(raw_enabled, (list, tuple)):
         raise PolicyError("plugins.enabled must be a list of plugin names")
-    plugins = PluginsPolicy(enabled=tuple(str(n) for n in raw_enabled))
+    # Every key under [plugins] other than `enabled` that is a table is a
+    # per-plugin settings sub-table ([plugins.<name>]).
+    plugin_settings = {
+        str(k): dict(v) for k, v in plugins_d.items() if k != "enabled" and isinstance(v, dict)
+    }
+    if plugin_schemas:
+        for name, raw_settings in plugin_settings.items():
+            _validate_plugin_settings(name, raw_settings, plugin_schemas.get(name))
+    plugins = PluginsPolicy(enabled=tuple(str(n) for n in raw_enabled), settings=plugin_settings)
     tui = TuiPolicy(low_frame_rate=bool(tui_d.get("low_frame_rate", TuiPolicy.low_frame_rate)))
     return Policy(
         gates=gates,

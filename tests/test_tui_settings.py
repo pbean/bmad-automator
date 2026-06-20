@@ -306,6 +306,45 @@ async def test_settings_screen_stage_override_roundtrip(project):
         assert pol.adapter.extra_args == ("--permission-mode", "bypassPermissions")
 
 
+# ------------------------------------------------------ plugin-contributed settings
+
+
+def write_policy_enabling_example(project) -> None:
+    """A policy that turns the builtin data-only `example` plugin on, so its
+    [[settings]] render a section in the screen."""
+    path = project.project / POLICY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[plugins]\nenabled = ["example"]\n', encoding="utf-8")
+
+
+async def test_disabled_plugin_section_is_absent(project):
+    """With no plugin enabled (template default), no plugin section renders."""
+    write_policy(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        titles = [str(c.title) for c in screen.query(Collapsible)]
+        assert not any("example" in t for t in titles)
+        assert not screen.query("#plugins-example-greeting")
+
+
+async def test_enabled_plugin_section_renders_and_round_trips(project):
+    """An enabled plugin's setting renders and persists under [plugins.<name>]."""
+    write_policy_enabling_example(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        titles = [str(c.title) for c in screen.query(Collapsible)]
+        assert any(t.startswith("example") for t in titles)
+        screen.query_one("#plugins-example-greeting", Input).value = "howdy"
+        await pilot.press("ctrl+s")
+        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        pol = policy_mod.load(project.project / POLICY_FILE)
+        assert pol.plugin_setting("example", "greeting") == "howdy"
+        # the trust allowlist is untouched by the settings write
+        assert pol.plugins.enabled == ("example",)
+
+
 # ----------------------------------------------- section collapse / expand-all
 
 

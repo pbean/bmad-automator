@@ -13,8 +13,6 @@ with this list" (override on, possibly empty — None ≠ []).
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass
-from itertools import groupby
 from pathlib import Path
 
 from rich.text import Text
@@ -38,359 +36,13 @@ from textual.widgets import (
     TextArea,
 )
 
-from ...engines.plugin import EDITOR_MODES
-from ...policy import (
-    BRANCH_PER_MODES,
-    GATE_MODES,
-    ISOLATION_MODES,
-    MERGE_STRATEGIES,
-    POLICY_FILE,
-    RETRO_MODES,
-    SWEEP_AUTO_MODES,
-    AdapterPolicy,
-    EnginePolicy,
-    GatesPolicy,
-    LimitsPolicy,
-    NotifyPolicy,
-    ReviewPolicy,
-    ScmPolicy,
-    SweepPolicy,
-    TuiPolicy,
-)
-from ..settings import STAGES, PolicyDoc
-
-
-@dataclass(frozen=True)
-class _Field:
-    section: str
-    key: str
-    kind: str  # select | int | float | str | switch | lines | args
-    options: tuple[str, ...] = ()
-    default: object = None
-    placeholder: str = ""
-    minimum: float | None = None
-    maximum: float | None = None
-    label: str = ""  # display override; falls back to key when empty
-    description: str = ""  # muted caption shown below the field row
-
-    @property
-    def widget_id(self) -> str:
-        return f"{self.section}-{self.key}".replace(".", "-")
-
-
-def _stage_fields(stage: str) -> tuple[_Field, ...]:
-    section = f"adapter.{stage}"
-    return (
-        _Field(section, "name", "str", placeholder="inherit from [adapter]"),
-        _Field(section, "model", "str", placeholder="inherit / client default"),
-        _Field(section, "extra_args", "args"),
-    )
-
-
-_FIELDS: tuple[_Field, ...] = (
-    _Field(
-        "gates",
-        "mode",
-        "select",
-        options=tuple(sorted(GATE_MODES)),
-        default=GatesPolicy.mode,
-    ),
-    _Field(
-        "gates",
-        "retrospective",
-        "select",
-        options=tuple(sorted(RETRO_MODES)),
-        default=GatesPolicy.retrospective,
-    ),
-    _Field(
-        "review",
-        "enabled",
-        "switch",
-        default=ReviewPolicy.enabled,
-        label="separate review session",
-        description=(
-            "ON: triple review runs in a dedicated 2nd session · "
-            "OFF: quick-dev runs its own tri-review inline, story straight to done"
-        ),
-    ),
-    _Field(
-        "limits",
-        "max_review_cycles",
-        "int",
-        minimum=1,
-        default=LimitsPolicy.max_review_cycles,
-    ),
-    _Field(
-        "limits",
-        "max_dev_attempts",
-        "int",
-        minimum=1,
-        default=LimitsPolicy.max_dev_attempts,
-    ),
-    _Field(
-        "limits",
-        "session_timeout_min",
-        "int",
-        minimum=1,
-        default=LimitsPolicy.session_timeout_min,
-    ),
-    _Field(
-        "limits",
-        "stop_without_result_nudges",
-        "int",
-        minimum=0,
-        default=LimitsPolicy.stop_without_result_nudges,
-    ),
-    _Field(
-        "limits",
-        "max_tokens_per_story",
-        "int",
-        minimum=1,
-        default=LimitsPolicy.max_tokens_per_story,
-    ),
-    _Field(
-        "limits",
-        "cache_read_weight",
-        "float",
-        minimum=0.0,
-        maximum=1.0,
-        default=LimitsPolicy.cache_read_weight,
-    ),
-    _Field("verify", "commands", "lines"),
-    _Field("notify", "desktop", "switch", default=NotifyPolicy.desktop),
-    _Field("notify", "file", "switch", default=NotifyPolicy.file),
-    _Field("adapter", "name", "str", placeholder="CLI profile — default: claude"),
-    _Field("adapter", "model", "str", placeholder="CLI default model"),
-    _Field("adapter", "extra_args", "args"),
-    _Field(
-        "adapter",
-        "cleanup_session_on_finish",
-        "switch",
-        default=AdapterPolicy.cleanup_session_on_finish,
-    ),
-    *(spec for stage in STAGES for spec in _stage_fields(stage)),
-    _Field(
-        "sweep",
-        "auto",
-        "select",
-        options=tuple(sorted(SWEEP_AUTO_MODES)),
-        default=SweepPolicy.auto,
-    ),
-    _Field("sweep", "max_bundles", "int", minimum=1, default=SweepPolicy.max_bundles),
-    _Field(
-        "sweep",
-        "max_triage_attempts",
-        "int",
-        minimum=1,
-        default=SweepPolicy.max_triage_attempts,
-    ),
-    _Field("sweep", "repeat", "switch", default=SweepPolicy.repeat),
-    _Field("sweep", "max_cycles", "int", minimum=1, default=SweepPolicy.max_cycles),
-    _Field(
-        "scm",
-        "isolation",
-        "select",
-        options=tuple(sorted(ISOLATION_MODES)),
-        default=ScmPolicy.isolation,
-        description=(
-            "none: work in place on the checked-out branch (default) · "
-            "worktree: run each story in its own git worktree, merge back to the target branch"
-        ),
-    ),
-    _Field(
-        "scm",
-        "branch_per",
-        "select",
-        options=tuple(sorted(BRANCH_PER_MODES)),
-        default=ScmPolicy.branch_per,
-        description=(
-            "worktree mode: one branch per story, or one shared branch per run "
-            "(run forces delete-branch off so the shared branch survives)"
-        ),
-    ),
-    _Field(
-        "scm",
-        "target_branch",
-        "str",
-        placeholder="default: the branch checked out at run start",
-        description="worktree mode: branch all units merge back into (created if missing)",
-    ),
-    _Field(
-        "scm",
-        "merge_strategy",
-        "select",
-        options=tuple(sorted(MERGE_STRATEGIES)),
-        default=ScmPolicy.merge_strategy,
-        description="worktree mode: how a unit branch lands on the target — ff, merge, or squash",
-    ),
-    _Field(
-        "scm",
-        "delete_branch",
-        "switch",
-        default=ScmPolicy.delete_branch,
-        description="worktree mode: delete the unit branch after a successful merge",
-    ),
-    _Field(
-        "scm",
-        "keep_failed",
-        "switch",
-        default=ScmPolicy.keep_failed,
-        description="worktree mode: keep a failed unit's worktree + branch mounted for inspection",
-    ),
-    _Field(
-        "scm",
-        "seed_adapter_defaults",
-        "switch",
-        default=ScmPolicy.seed_adapter_defaults,
-        label="seed adapter configs",
-        description=(
-            "worktree mode: copy each loaded adapter's gitignored MCP/CLI configs "
-            "(.mcp.json, .claude/settings.json, .codex/config.toml …) into the worktree "
-            "so isolated sessions can reach their MCP server"
-        ),
-    ),
-    _Field(
-        "scm",
-        "worktree_seed",
-        "lines",
-        label="extra worktree seed files",
-        description=(
-            "worktree mode: additional project-relative gitignored files to copy into "
-            "each worktree, one per line — on top of the adapter defaults above"
-        ),
-    ),
-    _Field(
-        "scm",
-        "commit_message_template",
-        "str",
-        placeholder="blank = built-in default; {story_key} / {run_id} substituted",
-        label="commit message template",
-        description="commit message dev sessions use for a story/bundle commit when set",
-    ),
-    _Field(
-        "scm",
-        "failed_diff_max_mb",
-        "int",
-        minimum=1,
-        default=ScmPolicy.failed_diff_max_mb,
-        label="failed-diff size cap (MB)",
-        description=(
-            "per-file size limit for untracked files captured into a kept-failed "
-            "unit's changes.patch · oversized files are skipped with a marker"
-        ),
-    ),
-    _Field(
-        "scm",
-        "failed_diff_unlimited",
-        "switch",
-        default=ScmPolicy.failed_diff_unlimited,
-        label="uncap failed-diff size",
-        description=(
-            "⚠ ON: capture failed-unit diffs with NO size limit (overrides the cap "
-            "above) — may produce very large patches; a warning is logged when active"
-        ),
-    ),
-    _Field(
-        "engine",
-        "name",
-        "str",
-        default=EnginePolicy.name,
-        placeholder="'' = disabled",
-        label="plugin name",
-        description=(
-            "game-engine plugin to enable — '' disables the layer (default); 'unity' "
-            "is bundled; a custom plugin lives under .automator/engines/<name>/"
-        ),
-    ),
-    _Field(
-        "engine",
-        "editor_mode",
-        "select",
-        options=tuple(sorted(EDITOR_MODES)),
-        default=EnginePolicy.editor_mode,
-        description=(
-            "shared → agent works in place on your live Editor (needs scm.isolation = "
-            "none); per_worktree → one managed Editor per worktree (needs isolation = "
-            "worktree)"
-        ),
-    ),
-    _Field(
-        "engine",
-        "mcp",
-        "select",
-        options=("ivanmurzak", "coplaydev"),
-        default=EnginePolicy.mcp,
-        label="Editor MCP",
-        description="which Editor MCP server the plugin's scripts target",
-    ),
-    _Field(
-        "engine",
-        "unity_path",
-        "str",
-        default=EnginePolicy.unity_path,
-        placeholder="'' = auto-detect",
-        description=(
-            "explicit Editor binary for a per_worktree launch; '' auto-detects · "
-            "ignored in shared mode (your own Editor is reused)"
-        ),
-    ),
-    _Field(
-        "engine",
-        "ready_timeout_sec",
-        "int",
-        minimum=1,
-        default=EnginePolicy.ready_timeout_sec,
-        description="how long the readiness gate blocks for the Editor + MCP to come up",
-    ),
-    _Field(
-        "engine",
-        "ready_grace_sec",
-        "int",
-        minimum=-1,
-        default=EnginePolicy.ready_grace_sec,
-        description=(
-            "delay before the first readiness probe; -1 = auto (120s cold per_worktree, "
-            "0s warm shared) · counts against ready_timeout_sec"
-        ),
-    ),
-    _Field(
-        "tui",
-        "low_frame_rate",
-        "switch",
-        default=TuiPolicy.low_frame_rate,
-        label="low frame rate",
-        description=(
-            "cap to 15fps + disable animations — fixes repaint tearing/garbage over "
-            "slow or SSH links · takes effect next time the TUI launches"
-        ),
-    ),
-)
+from ... import policy as policy_mod
+from ...policy import POLICY_FILE
+from ...settings_schema import SettingSpec, build_registry
+from ..settings import PolicyDoc
 
 # collect() sentinel for a field whose widget holds an unusable value
 _INVALID = object()
-
-# brief description shown after each section name in its collapsible header
-_SECTION_DESC = {
-    "gates": "approval gates, escalation & retrospective behavior",
-    "review": "separate adversarial review session toggle",
-    "limits": "cycle/attempt caps, timeout & token budget",
-    "verify": "post-implementation verification commands",
-    "notify": "desktop & file notifications",
-    "adapter": "CLI client, model & bypass flags (base for all stages)",
-    "adapter.dev": "dev-stage adapter overrides",
-    "adapter.review": "review-stage adapter overrides",
-    "adapter.triage": "triage-stage adapter overrides",
-    "sweep": "deferred-work sweep automation",
-    "scm": "git isolation, branching & merge-back",
-    "engine": "opt-in layer for game projects driving a live Editor via MCP (Unity)",
-    "tui": "dashboard rendering (slow-link / SSH tuning)",
-}
-
-# display name for a section's collapsible header, when it should differ from the
-# raw TOML section key (which stays the policy key). Falls back to the key.
-_SECTION_LABEL = {
-    "engine": "Game Engine",
-}
 
 
 class SettingsScreen(Screen[None]):
@@ -460,6 +112,16 @@ class SettingsScreen(Screen[None]):
         super().__init__()
         self._path = project / POLICY_FILE
         self._doc = doc
+        # The field/section list is generated from the TOML schema registry, not
+        # hardcoded: core sections plus a section for every enabled plugin that
+        # contributes settings. Which plugins are enabled comes from the policy
+        # under edit; an invalid doc still renders the core schema (on_mount then
+        # surfaces the validation error).
+        try:
+            pol = policy_mod.loads(doc.dumps())
+        except policy_mod.PolicyError:
+            pol = policy_mod.Policy()
+        self._registry = build_registry(project, pol)
         # The TextArea currently in cursor-edit mode (None = navigation mode).
         self._editing: Widget | None = None
 
@@ -476,12 +138,9 @@ class SettingsScreen(Screen[None]):
                 ),
                 id="note",
             )
-            for section, fields in groupby(_FIELDS, key=lambda f: f.section):
-                name = _SECTION_LABEL.get(section, section)
-                desc = _SECTION_DESC.get(section)
-                title = f"{name} — {desc}" if desc else name
-                with Collapsible(title=title, collapsed=True):
-                    for spec in fields:
+            for section in self._registry.sections:
+                with Collapsible(title=section.title, collapsed=True):
+                    for spec in section.fields:
                         yield from self._compose_field(spec)
             yield Static(id="errors")
             with Horizontal(classes="buttons"):
@@ -489,7 +148,7 @@ class SettingsScreen(Screen[None]):
                 yield Button("cancel", id="cancel")
         yield Footer()
 
-    def _compose_field(self, spec: _Field) -> ComposeResult:
+    def _compose_field(self, spec: SettingSpec) -> ComposeResult:
         raw = self._doc.get(spec.section, spec.key)
         with Horizontal(classes="field"):
             yield Label(spec.label or spec.key, classes="fieldname")
@@ -539,7 +198,7 @@ class SettingsScreen(Screen[None]):
             yield Static(spec.description, classes="fielddesc")
 
     def on_mount(self) -> None:
-        self._show_errors(self._doc.validate())
+        self._show_errors(self._doc.validate(self._registry.plugin_schemas))
 
     # ------------------------------------------------------------ keyboard
 
@@ -611,7 +270,7 @@ class SettingsScreen(Screen[None]):
 
     # ---------------------------------------------------------------- save
 
-    def _collect(self, spec: _Field, problems: list[str]) -> object:
+    def _collect(self, spec: SettingSpec, problems: list[str]) -> object:
         """Widget state -> raw policy value; None means unset (delete key)."""
         ident = f"{spec.section}.{spec.key}"
         if spec.kind == "select":
@@ -649,7 +308,7 @@ class SettingsScreen(Screen[None]):
         raise AssertionError(spec.kind)
 
     @staticmethod
-    def _changed(spec: _Field, current: object, desired: object) -> bool:
+    def _changed(spec: SettingSpec, current: object, desired: object) -> bool:
         if desired is None:
             # adapter.model = "" means "CLI default" just like an absent key;
             # don't rewrite the template line for an untouched empty input
@@ -667,14 +326,14 @@ class SettingsScreen(Screen[None]):
 
     def action_save(self) -> None:
         problems: list[str] = []
-        desired = {spec: self._collect(spec, problems) for spec in _FIELDS}
+        desired = {spec: self._collect(spec, problems) for spec in self._registry.fields()}
         if problems:
             self._show_errors("\n".join(problems))
             return
         for spec, value in desired.items():
             if self._changed(spec, self._doc.get(spec.section, spec.key), value):
                 self._doc.set(spec.section, spec.key, value)
-        error = self._doc.validate()
+        error = self._doc.validate(self._registry.plugin_schemas)
         if error:
             self._show_errors(error)
             return

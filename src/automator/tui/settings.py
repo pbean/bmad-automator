@@ -62,10 +62,13 @@ class PolicyDoc:
             return
         self._table(section, create=True)[key] = value
 
-    def validate(self) -> str | None:
-        """Authoritative validation via policy.loads(); None when valid."""
+    def validate(self, plugin_schemas: dict[str, Any] | None = None) -> str | None:
+        """Authoritative validation via policy.loads(); None when valid.
+
+        ``plugin_schemas`` (plugin name -> setting specs) lets the round-trip
+        also type-check any [plugins.<name>] tables the screen rendered."""
         try:
-            policy_mod.loads(self.dumps())
+            policy_mod.loads(self.dumps(), plugin_schemas=plugin_schemas)
         except policy_mod.PolicyError as e:
             return str(e)
         return None
