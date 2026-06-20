@@ -9,13 +9,18 @@ breaking changes may land in a minor release.
 
 ### Added
 
-- **Plugin system foundation (internal; not yet wired).** New `automator.plugins` package — a
-  general extension layer the orchestrator will build on: a `plugin.toml` manifest (metadata,
-  declarative `[hooks.<stage>]`, a `[[settings]]` schema, optional in-process `[python]`), a
-  folder-drop loader with builtin/project overlay (and a locked seam for entry-point packaging
-  later), a trust allowlist (`[plugins] enabled` in `policy.toml`), and a registry that isolates
-  plugin failures. A dropped `[python]` plugin is never imported unless explicitly enabled. Loads
-  into nothing yet — runs are byte-identical to today.
+- **Plugin system.** New `automator.plugins` package — a general extension layer: a `plugin.toml`
+  manifest (metadata, declarative `[hooks.<stage>]`, a `[[settings]]` schema, optional in-process
+  `[python]`), a folder-drop loader with builtin/project overlay (and a locked seam for
+  entry-point packaging later), a trust allowlist (`[plugins] enabled` in `policy.toml`), and a
+  registry that isolates plugin failures. A dropped `[python]` plugin is never imported unless
+  explicitly enabled. Plugins can **observe, veto (defer/pause/skip), and mutate** a shared
+  context at every run/sweep lifecycle stage via the hook bus, with an O(1) no-op fast path so
+  zero-plugin runs stay byte-identical.
+- **Dynamic, TOML-driven settings.** The settings schema moves to `data/settings/core.toml`
+  (presentation only; defaults/options referenced from the `policy.py` dataclasses, never
+  duplicated), the TUI settings screen renders from a registry, and an enabled plugin's
+  `[[settings]]` appear under `[plugins.<name>]`.
 
 ### Fixed
 
@@ -33,9 +38,21 @@ breaking changes may land in a minor release.
 
 ### Changed
 
+- **The game-engine layer is now a plugin.** Unity runs entirely through the plugin system, with
+  no engine-specific code in the core loop. Enable it with `[plugins] enabled = ["unity"]` and
+  configure it under `[plugins.unity]` (`editor_mode`, `mcp`, `unity_path`, `ready_timeout_sec`,
+  `ready_grace_sec`). Behavior — the readiness gate, `per_worktree` Editor setup/teardown, MCP
+  agent routing, and Library priming — is unchanged.
 - Unity engine plugin: pin the `unity-mcp-cli` verification stamp to **v0.81.1** (subcommand
   signatures re-checked; no call-site changes). Documents the new upstream **dev-control HTTP
   bridge** (dev-only, off by default, not wired) in the [Game Engine MCP guide](docs/game-engine-mcp-guide.md).
+
+### Deprecated
+
+- The `[engine]` policy block is deprecated in favor of `[plugins] enabled = ["unity"]` +
+  `[plugins.unity]`. Existing `[engine]` configs still load but emit a deprecation warning and are
+  folded onto the `unity` plugin; explicit `[plugins.unity]` values win. `[engine]` will be
+  removed in a future release.
 
 ## [0.4.3] — 2026-06-18
 

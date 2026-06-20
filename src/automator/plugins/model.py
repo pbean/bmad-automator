@@ -15,7 +15,7 @@ calls into a plugin is wired in a later phase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ PLUGIN_SOURCES = ("builtin", "entry_point", "project")
 
 class PluginError(Exception):
     """Raised on a malformed manifest, an unknown plugin, or an unsupported
-    builtin api_version. Mirrors EngineError/ProfileError."""
+    builtin api_version. Mirrors ProfileError."""
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,17 @@ class Plugin:
     def name(self) -> str:
         return self.manifest.name
 
+    def validate(self, policy: Any) -> None:
+        """Self-validate the plugin's resolved settings against the run policy.
+
+        Called once at registry-build time (before any stage fires). A plugin
+        raises ``PluginError`` here to reject an incompatible configuration —
+        e.g. a coupling between a plugin setting and a core policy field that a
+        flat per-key schema can't express (the engine plugin's
+        editor_mode↔scm.isolation coupling). This is a deliberate config
+        rejection, not a plugin bug, so the registry lets it propagate and the
+        run fails fast rather than being isolated out. The default is a no-op."""
+
     def hook(self, stage: str, ctx: "HookContext") -> None:
         """Route a stage to its ``on_<stage>`` handler, if defined. The bus wraps
         this call for failure isolation, so a subclass handler may raise freely."""
@@ -199,6 +210,10 @@ class LoadedPlugin:
     trusted: bool = True
     disabled: bool = False
     error: str = ""
+    # the plugin's resolved settings: manifest defaults overlaid by the
+    # ``[plugins.<name>]`` policy table. The same dict the instance was built
+    # with; the bus reads it for the declarative-hook ``BMAD_AUTO_SETTING_*`` env.
+    settings: dict[str, Any] = field(default_factory=dict)
 
     @property
     def name(self) -> str:

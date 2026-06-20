@@ -317,16 +317,19 @@ def test_scm_invalid_values(tmp_path):
         policy.load(p)
 
 
-def test_engine_defaults_and_disabled():
+# The game-engine layer is now the "unity" plugin. A legacy [engine] block still
+# loads — with a deprecation warning — by folding onto [plugins] + [plugins.unity].
+# The editor_mode↔scm.isolation coupling moved to the plugin (UnityPlugin.validate,
+# exercised in test_engine_plugin.py); policy.loads no longer enforces it.
+
+
+def test_no_engine_block_by_default():
     pol = policy.load(None)
-    assert pol.engine.name == ""  # disabled by default
-    assert pol.engine.editor_mode == "shared"
-    assert pol.engine.mcp == "ivanmurzak"
-    assert pol.engine.ready_timeout_sec == 600
-    assert pol.engine.ready_grace_sec == -1  # auto (per-mode default in the plugin)
+    assert pol.plugins.enabled == ()
+    assert pol.plugins.settings == {}
 
 
-def test_engine_load_values(tmp_path):
+def test_deprecated_engine_folds_to_unity_plugin(tmp_path):
     p = tmp_path / "policy.toml"
     p.write_text("""
 [engine]
@@ -337,42 +340,32 @@ unity_path = "/opt/Unity/Editor/Unity"
 ready_timeout_sec = 120
 ready_grace_sec = 90
 """)
-    eng = policy.load(p).engine
-    assert eng.name == "unity"
-    assert eng.mcp == "coplaydev"
-    assert eng.unity_path == "/opt/Unity/Editor/Unity"
-    assert eng.ready_timeout_sec == 120
-    assert eng.ready_grace_sec == 90
+    with pytest.warns(DeprecationWarning):
+        pol = policy.load(p)
+    assert "unity" in pol.plugins.enabled
+    assert pol.plugin_setting("unity", "mcp") == "coplaydev"
+    assert pol.plugin_setting("unity", "unity_path") == "/opt/Unity/Editor/Unity"
+    assert pol.plugin_setting("unity", "ready_timeout_sec") == 120
+    assert pol.plugin_setting("unity", "ready_grace_sec") == 90
 
 
-def test_engine_editor_mode_validated(tmp_path):
-    p = tmp_path / "policy.toml"
-    p.write_text('[engine]\nname = "unity"\neditor_mode = "live"\n')
-    with pytest.raises(policy.PolicyError, match="engine.editor_mode"):
-        policy.load(p)
-
-
-def test_shared_mode_rejects_worktree_isolation(tmp_path):
-    p = tmp_path / "policy.toml"
-    p.write_text(
-        '[engine]\nname = "unity"\neditor_mode = "shared"\n[scm]\nisolation = "worktree"\n'
-    )
-    with pytest.raises(policy.PolicyError, match="shared.*requires scm.isolation = 'none'"):
-        policy.load(p)
-
-
-def test_per_worktree_requires_worktree_isolation(tmp_path):
-    p = tmp_path / "policy.toml"
-    p.write_text('[engine]\nname = "unity"\neditor_mode = "per_worktree"\n')
-    with pytest.raises(policy.PolicyError, match="per_worktree.*requires scm.isolation"):
-        policy.load(p)
-
-
-def test_engine_constraints_skipped_when_disabled(tmp_path):
-    # name = "" leaves the editor_mode/isolation coupling unenforced
+def test_deprecated_engine_disabled_when_name_empty(tmp_path):
+    # name = "" was the old "disabled" state: warn, but enable nothing.
     p = tmp_path / "policy.toml"
     p.write_text('[engine]\neditor_mode = "shared"\n[scm]\nisolation = "worktree"\n')
-    assert policy.load(p).engine.name == ""
+    with pytest.warns(DeprecationWarning):
+        pol = policy.load(p)
+    assert pol.plugins.enabled == ()
+
+
+def test_explicit_plugin_settings_win_over_folded_engine(tmp_path):
+    p = tmp_path / "policy.toml"
+    p.write_text(
+        '[engine]\nname = "unity"\nmcp = "ivanmurzak"\n' '[plugins.unity]\nmcp = "coplaydev"\n'
+    )
+    with pytest.warns(DeprecationWarning):
+        pol = policy.load(p)
+    assert pol.plugin_setting("unity", "mcp") == "coplaydev"
 
 
 def test_template_parses():
@@ -382,8 +375,8 @@ def test_template_parses():
     assert doc["gates"]["mode"] == "per-epic"
     assert doc["review"]["enabled"] is True
     assert doc["scm"]["isolation"] == "none"
-    assert doc["engine"]["name"] == ""
-    assert doc["engine"]["editor_mode"] == "shared"
+    assert "engine" not in doc  # the game-engine layer is now a plugin
+    assert doc["plugins"]["enabled"] == []
 
 
 def test_to_dict_roundtrips_for_snapshot():

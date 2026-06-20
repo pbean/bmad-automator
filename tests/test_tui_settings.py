@@ -195,96 +195,63 @@ async def test_settings_screen_low_frame_rate_toggle_roundtrip(project):
         assert pol.tui.low_frame_rate is True
 
 
-# ------------------------------------------------------- engine (Game Engine)
+# ----------------------------------------- engine-is-now-a-plugin (Unity) settings
 
 
-async def test_settings_screen_engine_section_labeled_game_engine(project):
-    """The [engine] section renders under the friendlier 'Game Engine' header."""
+def write_policy_enabling_unity(project) -> None:
+    """A policy that turns the Unity engine plugin on, so its settings render
+    under [plugins.unity] in the settings screen."""
+    path = project.project / POLICY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[plugins]\nenabled = ["unity"]\n', encoding="utf-8")
+
+
+async def test_settings_screen_unity_section_renders_when_enabled(project):
+    """With unity enabled, its plugin section renders with plugins-unity-* widgets;
+    with no plugin enabled the section is absent."""
     write_policy(project)
+    app = BmadAutoApp(project.project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = await open_settings(app, pilot)
+        assert not screen.query("#plugins-unity-editor_mode")
+
+    write_policy_enabling_unity(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
         titles = [str(c.title) for c in screen.query(Collapsible)]
-        assert any(t.startswith("Game Engine") for t in titles)
-        assert not any(t.startswith("engine —") for t in titles)
+        assert any(t.startswith("unity") for t in titles)
+        assert screen.query("#plugins-unity-editor_mode")
 
 
-async def test_settings_screen_engine_name_roundtrip(project):
-    """Enabling the layer (name = unity) persists; shared mode is valid against
-    the default scm.isolation = none, so the save goes through."""
-    write_policy(project)
+async def test_settings_screen_unity_editor_mode_roundtrip(project):
+    write_policy_enabling_unity(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
-        screen.query_one("#engine-name", Input).value = "unity"
+        screen.query_one("#plugins-unity-editor_mode", Select).value = "per_worktree"
+        screen.query_one("#plugins-unity-mcp", Select).value = "coplaydev"
+        screen.query_one("#scm-isolation", Select).value = "worktree"  # valid per_worktree combo
         await pilot.press("ctrl+s")
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
         pol = policy_mod.load(project.project / POLICY_FILE)
-        assert pol.engine.name == "unity"
-        assert pol.engine.editor_mode == "shared"  # default preserved
+        assert pol.plugin_setting("unity", "editor_mode") == "per_worktree"
+        assert pol.plugin_setting("unity", "mcp") == "coplaydev"
+        assert pol.plugins.enabled == ("unity",)
 
 
-async def test_settings_screen_engine_mcp_select_roundtrip(project):
-    write_policy(project)
+async def test_settings_screen_unity_ready_fields_roundtrip(project):
+    write_policy_enabling_unity(project)
     app = BmadAutoApp(project.project)
     async with app.run_test(size=(100, 40)) as pilot:
         screen = await open_settings(app, pilot)
-        screen.query_one("#engine-name", Input).value = "unity"
-        screen.query_one("#engine-mcp", Select).value = "coplaydev"
+        screen.query_one("#plugins-unity-ready_timeout_sec", Input).value = "300"
+        screen.query_one("#plugins-unity-ready_grace_sec", Input).value = "30"
         await pilot.press("ctrl+s")
         await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
         pol = policy_mod.load(project.project / POLICY_FILE)
-        assert pol.engine.mcp == "coplaydev"
-
-
-async def test_settings_screen_engine_per_worktree_roundtrip(project):
-    """per_worktree requires scm.isolation = worktree; set both in one save."""
-    write_policy(project)
-    app = BmadAutoApp(project.project)
-    async with app.run_test(size=(100, 40)) as pilot:
-        screen = await open_settings(app, pilot)
-        screen.query_one("#engine-name", Input).value = "unity"
-        screen.query_one("#engine-editor_mode", Select).value = "per_worktree"
-        screen.query_one("#scm-isolation", Select).value = "worktree"
-        await pilot.press("ctrl+s")
-        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
-        pol = policy_mod.load(project.project / POLICY_FILE)
-        assert pol.engine.editor_mode == "per_worktree"
-        assert pol.scm.isolation == "worktree"
-
-
-async def test_settings_screen_engine_ready_fields_roundtrip(project):
-    write_policy(project)
-    app = BmadAutoApp(project.project)
-    async with app.run_test(size=(100, 40)) as pilot:
-        screen = await open_settings(app, pilot)
-        screen.query_one("#engine-name", Input).value = "unity"
-        screen.query_one("#engine-ready_timeout_sec", Input).value = "300"
-        screen.query_one("#engine-ready_grace_sec", Input).value = "30"
-        await pilot.press("ctrl+s")
-        await until(pilot, lambda: isinstance(app.screen, DashboardScreen))
-        pol = policy_mod.load(project.project / POLICY_FILE)
-        assert pol.engine.ready_timeout_sec == 300
-        assert pol.engine.ready_grace_sec == 30
-
-
-async def test_settings_screen_engine_coupling_blocks_save(project):
-    """per_worktree against the default scm.isolation = none is an invalid combo;
-    the authoritative policy.loads() rejects it and the screen stays open."""
-    write_policy(project)
-    app = BmadAutoApp(project.project)
-    async with app.run_test(size=(100, 40)) as pilot:
-        screen = await open_settings(app, pilot)
-        screen.query_one("#engine-name", Input).value = "unity"
-        screen.query_one("#engine-editor_mode", Select).value = "per_worktree"
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert isinstance(app.screen, SettingsScreen)
-        from textual.widgets import Static
-
-        strip = screen.query_one("#errors", Static)
-        assert "isolation" in str(strip.content)
-        assert (project.project / POLICY_FILE).read_text(encoding="utf-8") == POLICY_TEMPLATE
+        assert pol.plugin_setting("unity", "ready_timeout_sec") == 300
+        assert pol.plugin_setting("unity", "ready_grace_sec") == 30
 
 
 async def test_settings_screen_stage_override_roundtrip(project):

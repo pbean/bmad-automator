@@ -89,10 +89,13 @@ def _hook_env(ctx: HookContext, lp: LoadedPlugin) -> dict[str, str]:
         "BMAD_AUTO_ROLE": ctx.role or "",
         "BMAD_AUTO_PHASE": ctx.phase or "",
         "BMAD_AUTO_BRANCH": ctx.branch or "",
+        "BMAD_AUTO_AGENTS": ",".join(ctx.agents),
         "BMAD_AUTO_PLUGIN": lp.name,
     }
     env.update({k: v for k, v in fields.items() if v != ""})
-    for key, value in lp.manifest.setting_defaults().items():
+    # the plugin's *resolved* settings (defaults overlaid by [plugins.<name>]),
+    # not bare manifest defaults, so a declarative hook sees the operator's config.
+    for key, value in lp.settings.items():
         env[f"BMAD_AUTO_SETTING_{key.upper()}"] = str(value)
     return env
 

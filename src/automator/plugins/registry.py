@@ -36,8 +36,19 @@ from .model import (
 )
 
 
-def _instantiate(manifest: PluginManifest) -> Plugin:
-    """Import the plugin's module and construct its Plugin subclass.
+def _resolve_settings(manifest: PluginManifest, policy) -> dict:
+    """Manifest defaults overlaid by the ``[plugins.<name>]`` policy table. The
+    single resolved view the instance is built with and the bus reads for env."""
+    resolved = dict(manifest.setting_defaults())
+    plugins_pol = getattr(policy, "plugins", None) if policy is not None else None
+    overrides = getattr(plugins_pol, "settings", {}).get(manifest.name, {}) if plugins_pol else {}
+    resolved.update(overrides)
+    return resolved
+
+
+def _instantiate(manifest: PluginManifest, settings: dict) -> Plugin:
+    """Import the plugin's module and construct its Plugin subclass with its
+    resolved settings.
 
     Caller is responsible for the trust gate; this performs the actual
     ``exec_module``. Kept tiny so the registry's try/except wraps exactly the
@@ -57,14 +68,15 @@ def _instantiate(manifest: PluginManifest) -> Plugin:
         raise AttributeError(f"plugin module {manifest.python.module!r} has no {cls_name!r}")
     if not (isinstance(cls, type) and issubclass(cls, Plugin)):
         raise TypeError(f"{cls_name!r} must subclass plugins.Plugin")
-    return cls(manifest, dict(manifest.setting_defaults()))
+    return cls(manifest, settings)
 
 
 def _resolve(manifest: PluginManifest, policy, journal) -> LoadedPlugin:
+    settings = _resolve_settings(manifest, policy)
     if manifest.python is None:
         if journal is not None:
             journal.append("plugin-loaded", plugin=manifest.name, mode="declarative")
-        return LoadedPlugin(manifest=manifest)
+        return LoadedPlugin(manifest=manifest, settings=settings)
 
     if not trust.is_enabled(policy, manifest.name):
         if journal is not None:
@@ -73,18 +85,18 @@ def _resolve(manifest: PluginManifest, policy, journal) -> LoadedPlugin:
                 plugin=manifest.name,
                 reason="[python] module requires [plugins] enabled",
             )
-        return LoadedPlugin(manifest=manifest, trusted=False)
+        return LoadedPlugin(manifest=manifest, trusted=False, settings=settings)
 
     try:
-        instance = _instantiate(manifest)
+        instance = _instantiate(manifest, settings)
     except Exception as e:  # noqa: BLE001 - isolate plugin failures; never BaseException
         if journal is not None:
             journal.append("plugin-error", plugin=manifest.name, error=f"{type(e).__name__}: {e}")
-        return LoadedPlugin(manifest=manifest, disabled=True, error=str(e))
+        return LoadedPlugin(manifest=manifest, disabled=True, error=str(e), settings=settings)
 
     if journal is not None:
         journal.append("plugin-loaded", plugin=manifest.name, mode="python")
-    return LoadedPlugin(manifest=manifest, instance=instance)
+    return LoadedPlugin(manifest=manifest, instance=instance, settings=settings)
 
 
 class PluginRegistry:
@@ -138,3 +150,34 @@ class PluginRegistry:
     def instances(self) -> list[Plugin]:
         """Constructed, trusted, non-disabled in-process plugins."""
         return [lp.instance for lp in self._loaded if lp.instance is not None]
+
+    def _active_for_seeds(self) -> list[LoadedPlugin]:
+        """Plugins whose declared seeds apply: data-only/declarative plugins
+        (always active) and enabled in-process plugins (instance built). An
+        un-enabled or errored ``[python]`` plugin is inert — its module never ran,
+        so its seeds must not leak into a worktree (e.g. the Unity plugin's skill
+        tree when unity isn't enabled)."""
+        return [lp for lp in self._loaded if lp.manifest.python is None or lp.instance is not None]
+
+    def seed_files(self) -> list[str]:
+        """Union of every active plugin's ``seed_files`` (literal project-relative
+        paths), order-preserving + deduped. Consumed by worktree provisioning so a
+        plugin can prime an isolated checkout with gitignored paths it needs."""
+        return list(
+            dict.fromkeys(f for lp in self._active_for_seeds() for f in lp.manifest.seed_files)
+        )
+
+    def seed_globs(self) -> list[str]:
+        """Union of every active plugin's ``seed_globs`` (patterns expanded against
+        the main repo), order-preserving + deduped."""
+        return list(
+            dict.fromkeys(g for lp in self._active_for_seeds() for g in lp.manifest.seed_globs)
+        )
+
+    def validate(self, policy) -> None:
+        """Let every constructed in-process plugin self-validate against the run
+        policy (``Plugin.validate``). A plugin raises to reject an incompatible
+        config; the registry lets it propagate so the run fails fast at startup."""
+        for lp in self._loaded:
+            if lp.instance is not None:
+                lp.instance.validate(policy)

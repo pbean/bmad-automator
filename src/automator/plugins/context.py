@@ -75,6 +75,7 @@ class HookContext:
         branch: str | None = None,
         repo_root: str | None = None,
         run_dir: str | None = None,
+        agents: tuple[str, ...] = (),
         result_json: dict[str, Any] | None = None,
         session_status: str | None = None,
         verify_reason: str | None = None,
@@ -98,6 +99,9 @@ class HookContext:
         self._branch = branch
         self._repo_root = repo_root
         self._run_dir = run_dir
+        # the agent ids of the CLIs that run in this unit's worktree (dev + review),
+        # for a plugin that routes per-agent config (e.g. the engine's MCP routing).
+        self._agents = tuple(agents)
         # a *copy* — result_json feeds the critical_escalations audit and must
         # never be mutated through a plugin.
         self._result_json = dict(result_json) if result_json is not None else None
@@ -163,6 +167,10 @@ class HookContext:
     @property
     def run_dir(self) -> str | None:
         return self._run_dir
+
+    @property
+    def agents(self) -> tuple[str, ...]:
+        return self._agents
 
     @property
     def result_json(self) -> dict[str, Any] | None:

@@ -225,48 +225,9 @@ default_ref = "ScmPolicy.failed_diff_unlimited"
 label = "uncap failed-diff size"
 description = "⚠ ON: capture failed-unit diffs with NO size limit (overrides the cap above) — may produce very large patches; a warning is logged when active"
 
-[[section]]
-name = "engine"
-label = "Game Engine"
-description = "opt-in layer for game projects driving a live Editor via MCP (Unity)"
-[[section.field]]
-key = "name"
-kind = "str"
-default_ref = "EnginePolicy.name"
-placeholder = "'' = disabled"
-label = "plugin name"
-description = "game-engine plugin to enable — '' disables the layer (default); 'unity' is bundled; a custom plugin lives under .automator/engines/<name>/"
-[[section.field]]
-key = "editor_mode"
-kind = "select"
-options_ref = "EDITOR_MODES"
-default_ref = "EnginePolicy.editor_mode"
-description = "shared → agent works in place on your live Editor (needs scm.isolation = none); per_worktree → one managed Editor per worktree (needs isolation = worktree)"
-[[section.field]]
-key = "mcp"
-kind = "select"
-options = ["ivanmurzak", "coplaydev"]
-default_ref = "EnginePolicy.mcp"
-label = "Editor MCP"
-description = "which Editor MCP server the plugin's scripts target"
-[[section.field]]
-key = "unity_path"
-kind = "str"
-default_ref = "EnginePolicy.unity_path"
-placeholder = "'' = auto-detect"
-description = "explicit Editor binary for a per_worktree launch; '' auto-detects · ignored in shared mode (your own Editor is reused)"
-[[section.field]]
-key = "ready_timeout_sec"
-kind = "int"
-minimum = 1
-default_ref = "EnginePolicy.ready_timeout_sec"
-description = "how long the readiness gate blocks for the Editor + MCP to come up"
-[[section.field]]
-key = "ready_grace_sec"
-kind = "int"
-minimum = -1
-default_ref = "EnginePolicy.ready_grace_sec"
-description = "delay before the first readiness probe; -1 = auto (120s cold per_worktree, 0s warm shared) · counts against ready_timeout_sec"
+# The game-engine layer (Unity) is no longer a core section — it is a plugin.
+# Its settings render from the plugin's own schema (data/plugins/unity/plugin.toml)
+# under [plugins.unity] when "unity" is in [plugins] enabled.
 
 [[section]]
 name = "tui"

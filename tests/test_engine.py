@@ -147,6 +147,29 @@ def test_happy_path(project):
     assert adapter.sessions[1].prompt.startswith("/bmad-auto-review ")
 
 
+def test_inplace_ready_gate_veto_defers_before_any_session(project):
+    """A plugin gating pre_ready_gate in non-isolated (in-place) mode — e.g. a
+    shared-mode Unity engine waiting on the live Editor — defers the unit via the
+    bus veto path before any dev session runs. Proves the engine emits the ready
+    gate + honors a veto outside the worktree path, with no engine-specific code."""
+    write_sprint(project, {"epic-1": "backlog", "1-1-a": "ready-for-dev"})
+    # a declarative plugin whose blocking pre_ready_gate hook fails -> defer veto
+    plug = project.project / ".automator" / "plugins" / "gate"
+    plug.mkdir(parents=True)
+    (plug / "plugin.toml").write_text(
+        '[plugin]\nname = "gate"\napi_version = 1\n'
+        "[hooks.pre_ready_gate]\ncmd = 'exit 1'\nblocking = true\n"
+    )
+    engine, adapter = make_engine(project, [dev_effect(project, "1-1-a")])
+    summary = engine.run()
+
+    assert summary.deferred == 1 and summary.done == 0 and not summary.paused
+    assert engine.state.tasks["1-1-a"].phase == Phase.DEFERRED
+    assert adapter.sessions == []  # gate vetoed before the dev session
+    kinds = [e["kind"] for e in engine.journal.entries()]
+    assert "plugin-veto" in kinds and "story-deferred" in kinds
+
+
 def test_review_disabled_skips_review_session(project):
     from automator.policy import ReviewPolicy
 

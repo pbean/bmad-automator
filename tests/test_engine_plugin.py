@@ -1,4 +1,19 @@
-"""Game-engine plugin loader + the shared-mode readiness gate."""
+"""The Unity game-engine plugin: it is now a first-class bmad-auto plugin (the
+proof the framework carries an engine layer), not a bespoke ``engines/`` subsystem.
+
+Covered here:
+  * the bundled unity ``plugin.toml`` manifest (shape, settings, scripts, seeds);
+  * the ``UnityPlugin`` in-process hooks — readiness gate / per_worktree setup /
+    teardown — veto on failure and inject the ``BMAD_AUTO_ENGINE_*`` env contract;
+  * ``UnityPlugin.validate`` enforcing the editor_mode↔scm.isolation coupling;
+  * the engine's MCP agent-routing helpers that feed ``ctx.agents``;
+  * the unchanged unity helper-script unit tests (``unity_ready`` / ``unity_setup``
+    / ``unity_teardown``), now loaded from ``get_plugin("unity").scripts_dir``.
+
+The engine-integration gate flow (a plugin gating pre_worktree_setup/pre_ready_gate/
+pre_worktree_teardown and routing a veto to defer) is exercised end-to-end in
+test_engine_worktree.py with a generic declarative plugin.
+"""
 
 from __future__ import annotations
 
@@ -6,96 +21,275 @@ import importlib.util
 import json
 import os
 import time
-import types
 
 import pytest
 
-from automator.adapters.mock import MockAdapter
 from automator.engine import Engine, _setup_mcp_agent_id
-from automator.engines import EngineError, get_engine, load_engines
-from automator.journal import Journal
-from automator.model import Phase, RunState, StoryTask, TokenUsage
-from automator.policy import EnginePolicy, NotifyPolicy, Policy, ScmPolicy
+from automator.plugins import HookContext, PluginError, get_plugin, load_plugins
+from automator.plugins.model import PluginManifest
+from automator.policy import NotifyPolicy, PluginsPolicy, Policy, ScmPolicy
 
 QUIET = NotifyPolicy(desktop=False, file=True)
 
-MINIMAL_ENGINE = """
-name = "myeng"
-ready_cmd = 'python3 "{scripts}/probe.py"'
-"""
 
-
-# ----------------------------------------------------------------- loader
+# ------------------------------------------------------------- manifest / loader
 
 
 def test_builtin_unity_plugin_loads():
-    engines = load_engines()
-    assert "unity" in engines
-    unity = engines["unity"]
-    assert "unity_ready.py" in unity.ready_cmd
-    assert set(unity.editor_modes) == {"shared", "per_worktree"}
-    # scripts_dir points at the bundled plugin dir (for {scripts} substitution)
-    assert unity.scripts_dir.replace("\\", "/").endswith("data/engines/unity")
-
-
-def test_builtin_unity_plugin_declares_per_worktree_hooks():
-    unity = get_engine("unity")
-    assert "unity_setup.py" in unity.worktree_setup_cmd
-    assert "unity_teardown.py" in unity.worktree_teardown_cmd
+    plugins = load_plugins()
+    assert "unity" in plugins
+    unity = plugins["unity"]
+    assert unity.python is not None and unity.python.cls == "UnityPlugin"
     # MCP-generated skills are gitignored; seed them into per_worktree checkouts.
     assert ".claude/skills/*" in unity.seed_globs
+    # scripts_dir points at the bundled plugin dir (for {scripts} substitution)
+    assert unity.scripts_dir.replace("\\", "/").endswith("data/plugins/unity")
 
 
-def test_render_expands_scripts_placeholder():
-    unity = get_engine("unity")
-    rendered = unity.render(unity.ready_cmd)
-    assert "{scripts}" not in rendered
-    assert unity.scripts_dir in rendered
+def test_builtin_unity_plugin_ships_its_scripts():
+    scripts = os.listdir(get_plugin("unity").scripts_dir)
+    for name in ("unity_plugin.py", "unity_ready.py", "unity_setup.py", "unity_teardown.py"):
+        assert name in scripts, name
 
 
-def test_project_plugin_overlay(tmp_path):
-    eng_dir = tmp_path / ".automator" / "engines" / "myeng"
-    eng_dir.mkdir(parents=True)
-    (eng_dir / "engine.toml").write_text(MINIMAL_ENGINE)
-    engines = load_engines(tmp_path)
-    assert "myeng" in engines and "unity" in engines  # overlay extends built-ins
-    assert engines["myeng"].scripts_dir == str(eng_dir)
-    # {scripts} resolves to the project-local dir
-    assert str(eng_dir) in engines["myeng"].render(engines["myeng"].ready_cmd)
+def test_builtin_unity_plugin_settings_schema():
+    unity = get_plugin("unity")
+    by_key = {s.key: s for s in unity.settings}
+    assert set(by_key) == {
+        "editor_mode",
+        "mcp",
+        "unity_path",
+        "ready_timeout_sec",
+        "ready_grace_sec",
+    }
+    assert by_key["editor_mode"].type == "select"
+    assert by_key["editor_mode"].options == ("shared", "per_worktree")
+    assert by_key["editor_mode"].default == "shared"
+    assert by_key["ready_timeout_sec"].default == 600
 
 
-def test_unknown_engine_raises():
-    with pytest.raises(EngineError, match="unknown engine plugin"):
-        get_engine("godot")
+def test_unity_is_trust_gated():
+    """The [python] module is never built unless unity is in [plugins] enabled."""
+    from automator.plugins import PluginRegistry
+
+    off = PluginRegistry.build(policy=Policy())
+    assert off.get("unity").instance is None  # untrusted: not enabled
+
+    pol = Policy(plugins=PluginsPolicy(enabled=("unity",)))
+    on = PluginRegistry.build(policy=pol)
+    assert type(on.get("unity").instance).__name__ == "UnityPlugin"
 
 
-@pytest.mark.parametrize(
-    ("body", "match"),
-    [
-        ('ready_cmd = "x"', "name"),  # no name
-        ('name = "e"\neditor_modes = ["batch"]', "editor_modes"),
-        ('name = "e"\nseed_files = ["/etc/passwd"]', "seed_files"),
-        ('name = "e"\nseed_globs = ["/abs/*"]', "seed_globs"),
-    ],
-)
-def test_invalid_engine_rejected(tmp_path, body, match):
-    eng_dir = tmp_path / ".automator" / "engines" / "bad"
-    eng_dir.mkdir(parents=True)
-    (eng_dir / "engine.toml").write_text(body)
-    with pytest.raises(EngineError, match=match):
-        load_engines(tmp_path)
+# ------------------------------------------------------ UnityPlugin in-process hooks
 
 
-# -------------------------------------------------------- readiness gate
+def _unity_plugin_module():
+    path = os.path.join(get_plugin("unity").scripts_dir, "unity_plugin.py")
+    spec = importlib.util.spec_from_file_location("unity_plugin_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def make_engine(project, policy, script=None, run_id="test-run"):
-    run_dir = project.project / ".automator" / "runs" / run_id
-    adapter = MockAdapter(
-        script or [], usage_per_session=TokenUsage(input_tokens=1, output_tokens=1)
+def _make_unity(settings, scripts_dir):
+    """Build a UnityPlugin instance whose {scripts} dir is a tmp dir we control."""
+    cls = _unity_plugin_module().UnityPlugin
+    manifest = PluginManifest(name="unity", api_version=1, scripts_dir=str(scripts_dir))
+    full = {
+        "editor_mode": "shared",
+        "mcp": "ivanmurzak",
+        "unity_path": "",
+        "ready_timeout_sec": 600,
+        "ready_grace_sec": -1,
+    }
+    full.update(settings)
+    return cls(manifest, full)
+
+
+def _fake_script(scripts_dir, name, rc):
+    (scripts_dir / name).write_text(f"import sys\nsys.exit({rc})\n", encoding="utf-8")
+
+
+def _ctx(stage, scripts_dir, *, agents=()):
+    return HookContext(
+        stage,
+        run_id="r",
+        story_key="1-1-a",
+        repo_root=str(scripts_dir),
+        run_dir=str(scripts_dir),
+        worktree=str(scripts_dir),
+        agents=tuple(agents),
     )
-    state = RunState(run_id=run_id, project=str(project.project), started_at="now")
-    engine = Engine(
+
+
+def test_ready_gate_passes_when_script_succeeds(tmp_path):
+    _fake_script(tmp_path, "unity_ready.py", 0)
+    inst = _make_unity({}, tmp_path)
+    ctx = _ctx("pre_ready_gate", tmp_path)
+    inst.on_pre_ready_gate(ctx)
+    assert not ctx.vetoed
+
+
+def test_ready_gate_vetoes_defer_when_script_fails(tmp_path):
+    _fake_script(tmp_path, "unity_ready.py", 7)
+    inst = _make_unity({}, tmp_path)
+    ctx = _ctx("pre_ready_gate", tmp_path)
+    inst.on_pre_ready_gate(ctx)
+    veto = ctx.resolved_veto()
+    assert veto is not None and veto.action == "defer"
+    assert "not ready" in veto.reason and "rc=7" in veto.reason
+
+
+def test_ready_gate_vetoes_when_script_missing(tmp_path):
+    # no unity_ready.py on disk -> launch error -> defer (never crashes the run)
+    inst = _make_unity({}, tmp_path)
+    ctx = _ctx("pre_ready_gate", tmp_path)
+    inst.on_pre_ready_gate(ctx)
+    assert ctx.resolved_veto().action == "defer"
+
+
+def test_worktree_setup_only_acts_in_per_worktree(tmp_path):
+    _fake_script(tmp_path, "unity_setup.py", 5)
+    # shared mode: setup is a no-op, no veto even though the script would fail
+    shared = _make_unity({"editor_mode": "shared"}, tmp_path)
+    ctx = _ctx("pre_worktree_setup", tmp_path)
+    shared.on_pre_worktree_setup(ctx)
+    assert not ctx.vetoed
+    # per_worktree: setup runs and a failure vetoes
+    pw = _make_unity({"editor_mode": "per_worktree"}, tmp_path)
+    ctx2 = _ctx("pre_worktree_setup", tmp_path)
+    pw.on_pre_worktree_setup(ctx2)
+    assert ctx2.resolved_veto().action == "defer"
+
+
+def test_worktree_teardown_is_best_effort(tmp_path):
+    _fake_script(tmp_path, "unity_teardown.py", 9)
+    pw = _make_unity({"editor_mode": "per_worktree"}, tmp_path)
+    ctx = _ctx("pre_worktree_teardown", tmp_path)
+    pw.on_pre_worktree_teardown(ctx)  # a failing teardown never vetoes
+    assert not ctx.vetoed
+
+
+# ------------------------------------------------------ UnityPlugin env contract
+
+
+def test_engine_env_carries_settings_and_agents(tmp_path):
+    inst = _make_unity(
+        {
+            "editor_mode": "per_worktree",
+            "mcp": "coplaydev",
+            "unity_path": "/opt/Unity/Editor",
+            "ready_timeout_sec": 120,
+            "ready_grace_sec": 30,
+        },
+        tmp_path,
+    )
+    ctx = _ctx("pre_ready_gate", tmp_path, agents=["claude-code", "codex"])
+    env = inst.engine_env(ctx)
+    assert env["BMAD_AUTO_ENGINE_MCP"] == "coplaydev"
+    assert env["BMAD_AUTO_ENGINE_EDITOR_MODE"] == "per_worktree"
+    assert env["BMAD_AUTO_ENGINE_READY_TIMEOUT"] == "120"
+    assert env["BMAD_AUTO_ENGINE_READY_GRACE"] == "30"
+    assert env["BMAD_AUTO_UNITY_PATH"] == "/opt/Unity/Editor"
+    assert env["BMAD_AUTO_WORKTREE"] == str(tmp_path)
+    assert env["BMAD_AUTO_STORY_KEY"] == "1-1-a"
+    # MCP agent routing: dev + review CLIs, from ctx.agents
+    assert env["BMAD_AUTO_ENGINE_AGENTS"] == "claude-code,codex"
+
+
+def test_engine_env_omits_agents_when_none(tmp_path):
+    inst = _make_unity({}, tmp_path)
+    env = inst.engine_env(_ctx("pre_ready_gate", tmp_path, agents=()))
+    assert "BMAD_AUTO_ENGINE_AGENTS" not in env
+
+
+# --------------------------------------------------- editor_mode↔isolation coupling
+
+
+def test_validate_accepts_matching_coupling(tmp_path):
+    _make_unity({"editor_mode": "shared"}, tmp_path).validate(
+        Policy(scm=ScmPolicy(isolation="none"))
+    )
+    _make_unity({"editor_mode": "per_worktree"}, tmp_path).validate(
+        Policy(scm=ScmPolicy(isolation="worktree"))
+    )
+
+
+def test_validate_rejects_shared_with_worktree(tmp_path):
+    inst = _make_unity({"editor_mode": "shared"}, tmp_path)
+    with pytest.raises(PluginError, match="shared.*requires scm.isolation = 'none'"):
+        inst.validate(Policy(scm=ScmPolicy(isolation="worktree")))
+
+
+def test_validate_rejects_per_worktree_without_worktree(tmp_path):
+    inst = _make_unity({"editor_mode": "per_worktree"}, tmp_path)
+    with pytest.raises(PluginError, match="per_worktree.*requires scm.isolation"):
+        inst.validate(Policy(scm=ScmPolicy(isolation="none")))
+
+
+def test_validate_rejects_unknown_editor_mode(tmp_path):
+    inst = _make_unity({"editor_mode": "live"}, tmp_path)
+    with pytest.raises(PluginError, match="editor_mode must be one of"):
+        inst.validate(Policy(scm=ScmPolicy(isolation="none")))
+
+
+def test_engine_rejects_invalid_coupling_at_construction(project):
+    """The engine runs registry.validate() at startup; a bad Unity coupling fails
+    the run fast rather than mid-unit."""
+    pol = Policy(
+        notify=QUIET,
+        plugins=PluginsPolicy(
+            enabled=("unity",), settings={"unity": {"editor_mode": "per_worktree"}}
+        ),
+        scm=ScmPolicy(isolation="none"),  # violates per_worktree's coupling
+    )
+    from automator.adapters.mock import MockAdapter
+    from automator.journal import Journal
+    from automator.model import RunState, TokenUsage
+
+    run_dir = project.project / ".automator" / "runs" / "r"
+    with pytest.raises(PluginError, match="per_worktree.*requires scm.isolation"):
+        Engine(
+            paths=project,
+            policy=pol,
+            adapter=MockAdapter([], usage_per_session=TokenUsage(input_tokens=1, output_tokens=1)),
+            run_dir=run_dir,
+            journal=Journal(run_dir),
+            state=RunState(run_id="r", project=str(project.project), started_at="now"),
+        )
+
+
+# ------------------------------------ per_worktree MCP agent routing (feeds ctx.agents)
+
+
+def test_setup_mcp_agent_id_mapping():
+    # only claude carries the "-code" suffix; everything else passes through
+    assert _setup_mcp_agent_id("claude") == "claude-code"
+    assert _setup_mcp_agent_id("codex") == "codex"
+    assert _setup_mcp_agent_id("gemini") == "gemini"
+    assert _setup_mcp_agent_id("cursor") == "cursor"
+    assert _setup_mcp_agent_id("some-custom-profile") == "some-custom-profile"
+
+
+class _FakeProfile:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeAdapter:
+    def __init__(self, name):
+        self.profile = _FakeProfile(name)
+
+
+def _make_engine(project, policy):
+    from automator.adapters.mock import MockAdapter
+    from automator.journal import Journal
+    from automator.model import RunState, TokenUsage
+
+    run_dir = project.project / ".automator" / "runs" / "test-run"
+    adapter = MockAdapter([], usage_per_session=TokenUsage(input_tokens=1, output_tokens=1))
+    state = RunState(run_id="test-run", project=str(project.project), started_at="now")
+    return Engine(
         paths=project,
         policy=policy,
         adapter=adapter,
@@ -103,57 +297,29 @@ def make_engine(project, policy, script=None, run_id="test-run"):
         journal=Journal(run_dir),
         state=state,
     )
-    return engine, adapter
 
 
-def _write_plugin(project, name, ready_cmd):
-    eng_dir = project.project / ".automator" / "engines" / name
-    eng_dir.mkdir(parents=True)
-    (eng_dir / "engine.toml").write_text(f'name = "{name}"\nready_cmd = "{ready_cmd}"\n')
+def test_engine_agent_ids_dedups_dev_and_review(project):
+    # a worktree can host two different CLIs (dev=claude, review=codex) — both must
+    # be routed, deduped and order-preserved
+    engine = _make_engine(project, Policy(notify=QUIET))
+    engine.adapters = {"dev": _FakeAdapter("claude"), "review": _FakeAdapter("codex")}
+    assert engine._engine_agent_ids() == ["claude-code", "codex"]
+    engine.adapters = {"dev": _FakeAdapter("codex"), "review": _FakeAdapter("codex")}
+    assert engine._engine_agent_ids() == ["codex"]
 
 
-def test_gate_noop_when_engine_disabled(project):
-    engine, _ = make_engine(project, Policy(notify=QUIET))
-    assert engine._engine is None
-    assert engine._engine_ready_gate(StoryTask(story_key="1-1-a", epic=1)) is True
-
-
-def test_gate_passes_when_ready_cmd_succeeds(project):
-    _write_plugin(project, "teng", "true")
-    pol = Policy(notify=QUIET, engine=EnginePolicy(name="teng", editor_mode="shared"))
-    engine, _ = make_engine(project, pol)
-    task = StoryTask(story_key="1-1-a", epic=1)
-    assert engine._engine_ready_gate(task) is True
-    assert task.phase != Phase.DEFERRED
-    assert "engine-ready" in [e["kind"] for e in engine.journal.entries()]
-
-
-def test_gate_defers_when_ready_cmd_fails(project):
-    _write_plugin(project, "teng", "exit 7")
-    pol = Policy(notify=QUIET, engine=EnginePolicy(name="teng", editor_mode="shared"))
-    engine, _ = make_engine(project, pol)
-    task = StoryTask(story_key="1-1-a", epic=1)
-    assert engine._engine_ready_gate(task) is False
-    assert task.phase == Phase.DEFERRED
-    assert "not ready" in task.defer_reason
-    assert "engine-not-ready" in [e["kind"] for e in engine.journal.entries()]
-
-
-def test_failed_gate_skips_session_in_run_story(project):
-    _write_plugin(project, "teng", "false")
-    pol = Policy(notify=QUIET, engine=EnginePolicy(name="teng", editor_mode="shared"))
-    engine, adapter = make_engine(project, pol)
-    task = StoryTask(story_key="1-1-a", epic=1)
-    engine._run_story(task)  # shared mode: gate fails -> defer, never drives
-    assert task.phase == Phase.DEFERRED
-    assert adapter.sessions == []  # no dev/review session was ever started
+def test_engine_agent_ids_empty_for_profileless_adapters(project):
+    # MockAdapter has no .profile -> nothing to route (ctx.agents stays empty)
+    engine = _make_engine(project, Policy(notify=QUIET))
+    assert engine._engine_agent_ids() == []
 
 
 # ------------------------------------------------ unity_ready cold-launch grace
 
 
 def _load_unity_ready():
-    path = os.path.join(get_engine("unity").scripts_dir, "unity_ready.py")
+    path = os.path.join(get_plugin("unity").scripts_dir, "unity_ready.py")
     spec = importlib.util.spec_from_file_location("unity_ready_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -175,7 +341,7 @@ def test_unity_ready_grace_auto_per_mode(monkeypatch):
 
 
 def _load_unity_teardown():
-    path = os.path.join(get_engine("unity").scripts_dir, "unity_teardown.py")
+    path = os.path.join(get_plugin("unity").scripts_dir, "unity_teardown.py")
     spec = importlib.util.spec_from_file_location("unity_teardown_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -278,7 +444,7 @@ def test_unity_ready_not_ready_when_tool_never_answers(tmp_path, monkeypatch):
 
 
 def _load_unity_setup():
-    path = os.path.join(get_engine("unity").scripts_dir, "unity_setup.py")
+    path = os.path.join(get_plugin("unity").scripts_dir, "unity_setup.py")
     spec = importlib.util.spec_from_file_location("unity_setup_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -468,83 +634,7 @@ def test_unity_setup_prime_drops_stale_symlink(tmp_path, monkeypatch):
     assert (wt / "Library" / "ArtifactDB").read_text() == "db"
 
 
-def test_unsupported_editor_mode_rejected_at_construction(project):
-    # a plugin that only supports per_worktree, asked to run shared
-    eng_dir = project.project / ".automator" / "engines" / "wonly"
-    eng_dir.mkdir(parents=True)
-    (eng_dir / "engine.toml").write_text('name = "wonly"\neditor_modes = ["per_worktree"]\n')
-    pol = Policy(
-        notify=QUIET,
-        engine=EnginePolicy(name="wonly", editor_mode="shared"),
-        scm=ScmPolicy(isolation="none"),
-    )
-    with pytest.raises(EngineError, match="does not support editor_mode"):
-        make_engine(project, pol)
-
-
-# ------------------------------------ per_worktree MCP agent routing (the leak fix)
-
-
-def test_setup_mcp_agent_id_mapping():
-    # only claude carries the "-code" suffix; everything else passes through
-    assert _setup_mcp_agent_id("claude") == "claude-code"
-    assert _setup_mcp_agent_id("codex") == "codex"
-    assert _setup_mcp_agent_id("gemini") == "gemini"
-    assert _setup_mcp_agent_id("cursor") == "cursor"
-    assert _setup_mcp_agent_id("some-custom-profile") == "some-custom-profile"
-
-
-class _FakeProfile:
-    def __init__(self, name):
-        self.name = name
-
-
-class _FakeAdapter:
-    def __init__(self, name):
-        self.profile = _FakeProfile(name)
-
-
-def test_engine_agent_ids_dedups_dev_and_review(project):
-    # a worktree can host two different CLIs (dev=claude, review=codex) — both must
-    # be routed, deduped and order-preserved
-    engine, _ = make_engine(project, Policy(notify=QUIET))
-    engine.adapters = {"dev": _FakeAdapter("claude"), "review": _FakeAdapter("codex")}
-    assert engine._engine_agent_ids() == ["claude-code", "codex"]
-    engine.adapters = {"dev": _FakeAdapter("codex"), "review": _FakeAdapter("codex")}
-    assert engine._engine_agent_ids() == ["codex"]
-
-
-def test_engine_agent_ids_empty_for_profileless_adapters(project):
-    # MockAdapter has no .profile -> nothing to route (env var omitted)
-    engine, _ = make_engine(project, Policy(notify=QUIET))
-    assert engine._engine_agent_ids() == []
-
-
-def _capture_hook_env(engine, monkeypatch):
-    import automator.engine as eng_mod
-
-    captured = {}
-
-    def fake_run(cmd, **kw):
-        captured["env"] = kw["env"]
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(eng_mod.subprocess, "run", fake_run)
-    engine._run_engine_hook("true", StoryTask(story_key="1-1-a", epic=1))
-    return captured["env"]
-
-
-def test_run_engine_hook_injects_agents_env(project, monkeypatch):
-    engine, _ = make_engine(project, Policy(notify=QUIET))
-    engine.adapters = {"dev": _FakeAdapter("claude"), "review": _FakeAdapter("codex")}
-    env = _capture_hook_env(engine, monkeypatch)
-    assert env["BMAD_AUTO_ENGINE_AGENTS"] == "claude-code,codex"
-
-
-def test_run_engine_hook_omits_agents_env_when_no_profiles(project, monkeypatch):
-    engine, _ = make_engine(project, Policy(notify=QUIET))  # MockAdapter, no profile
-    env = _capture_hook_env(engine, monkeypatch)
-    assert "BMAD_AUTO_ENGINE_AGENTS" not in env
+# ------------------------------------ unity_setup engine-agent env + isolation
 
 
 def test_unity_setup_engine_agent_ids_env_parsing(monkeypatch):

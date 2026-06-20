@@ -16,7 +16,6 @@ from automator import policy as policy_mod
 from automator.plugins import load_plugins
 from automator.policy import (
     BRANCH_PER_MODES,
-    EDITOR_MODES,
     GATE_MODES,
     ISOLATION_MODES,
     MERGE_STRATEGIES,
@@ -24,7 +23,6 @@ from automator.policy import (
     RETRO_MODES,
     SWEEP_AUTO_MODES,
     AdapterPolicy,
-    EnginePolicy,
     GatesPolicy,
     LimitsPolicy,
     NotifyPolicy,
@@ -38,7 +36,9 @@ from automator.policy import (
 )
 from automator.settings_schema import build_registry, load_core_schema
 
-# Which policy dataclass backs each core schema section.
+# Which policy dataclass backs each core schema section. The game-engine layer is
+# no longer a core section — it is the "unity" plugin, rendered from its own
+# manifest schema (see test_unity_plugin_settings_render_when_enabled).
 SECTION_DC = {
     "gates": GatesPolicy,
     "review": ReviewPolicy,
@@ -51,11 +51,10 @@ SECTION_DC = {
     "adapter.triage": StageAdapterPolicy,
     "sweep": SweepPolicy,
     "scm": ScmPolicy,
-    "engine": EnginePolicy,
     "tui": TuiPolicy,
 }
 
-# select fields whose options are an enum set (engine.mcp uses a literal list).
+# select fields whose options are an enum set.
 OPTIONS_ENUM = {
     ("gates", "mode"): GATE_MODES,
     ("gates", "retrospective"): RETRO_MODES,
@@ -63,7 +62,6 @@ OPTIONS_ENUM = {
     ("scm", "isolation"): ISOLATION_MODES,
     ("scm", "branch_per"): BRANCH_PER_MODES,
     ("scm", "merge_strategy"): MERGE_STRATEGIES,
-    ("engine", "editor_mode"): EDITOR_MODES,
 }
 
 # Policy fields with no settings-screen control, by design. Each maps to a whole
@@ -208,3 +206,37 @@ def test_template_has_no_plugin_settings_tables():
     # POLICY_TEMPLATE must stay untouched: [plugins] carries only `enabled`.
     pol = policy_mod.loads(POLICY_TEMPLATE)
     assert pol.plugins.settings == {}
+
+
+# ---------------------------------------------- engine-is-now-a-plugin (Unity)
+
+
+def test_unity_plugin_settings_render_when_enabled():
+    """The game-engine layer's settings now render from the unity plugin schema
+    under [plugins.unity] — only when unity is enabled."""
+    off = build_registry(None, Policy())
+    assert not any(s.plugin == "unity" for s in off.sections)
+
+    pol = policy_mod.loads('[plugins]\nenabled = ["unity"]\n')
+    reg = build_registry(None, pol)
+    unity = next((s for s in reg.sections if s.plugin == "unity"), None)
+    assert unity is not None and unity.name == "plugins.unity"
+    keys = [f.key for f in unity.fields]
+    assert keys == ["editor_mode", "mcp", "unity_path", "ready_timeout_sec", "ready_grace_sec"]
+    editor_mode = next(f for f in unity.fields if f.key == "editor_mode")
+    assert editor_mode.kind == "select"
+    assert editor_mode.options == ("shared", "per_worktree")
+    assert editor_mode.widget_id == "plugins-unity-editor_mode"  # dotted -> dashed
+
+
+def test_deprecated_engine_block_folds_into_unity_plugin():
+    """A legacy [engine] block loads (with a deprecation warning) by folding onto
+    [plugins] enabled + [plugins.unity]; explicit [plugins.unity] values win."""
+    with pytest.warns(DeprecationWarning):
+        pol = policy_mod.loads(
+            '[engine]\nname = "unity"\neditor_mode = "per_worktree"\nmcp = "coplaydev"\n'
+            '[scm]\nisolation = "worktree"\n'
+        )
+    assert "unity" in pol.plugins.enabled
+    assert pol.plugin_setting("unity", "editor_mode") == "per_worktree"
+    assert pol.plugin_setting("unity", "mcp") == "coplaydev"

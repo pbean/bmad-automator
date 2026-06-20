@@ -8,10 +8,8 @@ verify. All creative work happens inside disposable adapter sessions.
 
 from __future__ import annotations
 
-import os
 import shutil
 import signal
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -19,7 +17,6 @@ from typing import Callable
 from . import gates, verify
 from .adapters.base import CodingCLIAdapter, SessionResult, SessionSpec
 from .bmadconfig import ProjectPaths
-from .engines import EnginePlugin, get_engine
 from .escalation import (
     Action,
     critical_escalations,
@@ -103,9 +100,6 @@ class Engine:
     # The engine that installed the process-wide stop handlers; nested
     # auto-sweep runs (same process) see it set and let RunStopped propagate up.
     _stop_signals_owner: "Engine | None" = None
-    # bound on the best-effort per_worktree Editor teardown so a hung Editor-quit
-    # can't stall the whole loop for the full readiness budget on every unit.
-    _ENGINE_TEARDOWN_TIMEOUT = 120
 
     def __init__(
         self,
@@ -140,16 +134,20 @@ class Engine:
         # spawns a child deferred-work sweep run (injected by the CLI to
         # avoid an engine -> sweep import cycle); see _maybe_auto_sweep
         self.sweep_factory = sweep_factory
-        # optional game-engine plugin (Unity, ...); None unless [engine] name is set
-        self._engine = self._load_engine_plugin()
         # plugin hook bus. Built silently (no journal handed to the registry) so a
         # zero-plugin run — the only builtin is the data-only `example` — adds
         # nothing to the journal and stays byte-identical to today. The bus
         # journals actual hook activity itself; a single "plugins-active" line
-        # records the live plugins only when at least one binds a stage.
+        # records the live plugins only when at least one binds a stage. The
+        # game-engine layer (Unity) is now itself a plugin: enabling it in
+        # [plugins] gives it lifecycle hooks that gate/manage the Editor.
         self._registry = (
             registry if registry is not None else PluginRegistry.build(self.paths.repo_root, policy)
         )
+        # let every in-process plugin reject an incompatible config at startup
+        # (e.g. the Unity plugin's editor_mode↔scm.isolation coupling) so the run
+        # fails fast rather than mid-unit.
+        self._registry.validate(policy)
         self._bus = HookBus(self._registry, journal)
         if self._bus.any_active():
             self.journal.append("plugins-active", plugins=self._bus.active_plugins())
@@ -366,19 +364,17 @@ class Engine:
             for profile in profiles:
                 seeds.extend(profile.seed_files)
         seeds.extend(scm.worktree_seed)
-        # per_worktree engine plugin: also pull its MCP-generated skill tree +
-        # extra gitignored configs into the checkout so the worktree's Editor MCP
-        # is reachable (the agent's CLI finds the engine tool skills + client config).
-        engine_globs: list[str] = []
-        if self._engine is not None and self.policy.engine.editor_mode == "per_worktree":
-            seeds.extend(self._engine.seed_files)
-            engine_globs = list(self._engine.seed_globs)
+        # plugins (e.g. the Unity engine) may prime an isolated checkout with
+        # gitignored paths they need — e.g. an MCP-generated skill tree + client
+        # config so the worktree's Editor MCP is reachable. Aggregate every loaded
+        # plugin's declared seeds.
+        seeds.extend(self._registry.seed_files())
         provision_worktree(
             unit.path,
             profiles,
             self.paths.repo_root,
             seed_files=list(dict.fromkeys(seeds)),  # dedupe, preserve order
-            seed_globs=engine_globs,
+            seed_globs=self._registry.seed_globs(),
         )
         self.journal.append(
             "worktree-opened", story_key=task.story_key, branch=unit.branch, path=str(unit.path)
@@ -387,23 +383,20 @@ class Engine:
         prev = self.workspace
         self.workspace = unit.workspace
         try:
-            # per_worktree engine: launch the unit's managed Editor + wait for its
-            # MCP to come up before driving. setup/gate failure leaves the task
-            # DEFERRED and skips drive(); both fall through to _integrate_unit,
-            # which tears the (empty) worktree down via the DEFERRED path.
-            self._emit("pre_worktree_setup", task)
-            if self._engine_worktree_setup(task, unit.path) and self._engine_ready_gate(
-                task, worktree=unit.path
-            ):
+            # A plugin (e.g. the Unity engine) may launch the unit's managed Editor
+            # at pre_worktree_setup + wait for its MCP at pre_ready_gate before
+            # driving. A veto (defer) at either stage leaves the task DEFERRED and
+            # skips drive(); both fall through to _integrate_unit, which tears the
+            # (empty) worktree down via the DEFERRED path.
+            if self._gate_unit(task):
                 self._emit("post_worktree_setup", task)
                 drive(task)
         finally:
-            # always quit the managed Editor — on success, on a deferral, and on a
-            # RunPaused (spec gate / escalation) propagating through — before the
-            # workspace is restored, so the editor never outlives its worktree.
-            # Teardown stages are observe-only (a veto here cannot un-tear-down).
+            # always run teardown — on success, on a deferral, and on a RunPaused
+            # (spec gate / escalation) propagating through — before the workspace is
+            # restored, so a managed Editor never outlives its worktree. Teardown
+            # stages are observe-only (a veto here cannot un-tear-down).
             self._emit("pre_worktree_teardown", task)
-            self._engine_worktree_teardown(task, unit.path)
             self._emit("post_worktree_teardown", task)
             self.workspace = prev
         # reached only on a normal return (DONE or DEFERRED); a RunPaused from the
@@ -451,7 +444,7 @@ class Engine:
         repo = self.paths.repo_root
         target = self.state.target_branch
         # A per_worktree Unity Editor can leak asset writes into the *main*
-        # checkout (see _engine_worktree_setup), dirtying the target with the very
+        # checkout (see the unity plugin's worktree setup), dirtying the target with the very
         # files this branch already committed. Reconcile that first: clean only
         # the leaked copies of incoming files; refuse (escalate) if anything dirty
         # falls outside this branch's path set — that may be real operator work.
@@ -691,166 +684,20 @@ class Engine:
 
     # ------------------------------------------------------------- per story
 
-    def _load_engine_plugin(self) -> EnginePlugin | None:
-        """Resolve the configured game-engine plugin, or None when disabled."""
-        name = self.policy.engine.name
-        if not name:
-            return None
-        plugin = get_engine(name, self.paths.repo_root)
-        mode = self.policy.engine.editor_mode
-        if mode not in plugin.editor_modes:
-            from .engines import EngineError
-
-            raise EngineError(
-                f"engine {plugin.name!r} does not support editor_mode {mode!r} "
-                f"(supports {sorted(plugin.editor_modes)})"
-            )
-        return plugin
-
-    def _run_engine_hook(
-        self,
-        command: str,
-        task: StoryTask,
-        *,
-        worktree: Path | None = None,
-        timeout: int | None = None,
-    ) -> tuple[int, str]:
-        """Run one rendered engine command with the BMAD_AUTO_* env the plugin
-        scripts read, returning (returncode, output-tail). Shared by the readiness
-        gate and the per_worktree setup/teardown hooks. ``worktree`` overrides the
-        cwd + BMAD_AUTO_WORKTREE (the engine swaps self.workspace mid-unit, so the
-        callers pass the unit path explicitly); it defaults to the active workspace."""
-        eng = self.policy.engine
-        plugin = self._engine
-        root = worktree if worktree is not None else self.workspace.root
-        limit = eng.ready_timeout_sec if timeout is None else timeout
-        env = dict(os.environ)
-        if plugin is not None:
-            env.update(plugin.env)
-        env.update(
-            {
-                "BMAD_AUTO_REPO_ROOT": str(self.paths.repo_root),
-                "BMAD_AUTO_WORKTREE": str(root),
-                "BMAD_AUTO_RUN_DIR": str(self.run_dir),
-                "BMAD_AUTO_STORY_KEY": task.story_key,
-                "BMAD_AUTO_ENGINE_MCP": eng.mcp,
-                "BMAD_AUTO_ENGINE_EDITOR_MODE": eng.editor_mode,
-                "BMAD_AUTO_ENGINE_READY_TIMEOUT": str(eng.ready_timeout_sec),
-                "BMAD_AUTO_ENGINE_READY_GRACE": str(eng.ready_grace_sec),
-                "BMAD_AUTO_UNITY_PATH": eng.unity_path,
-            }
-        )
-        # Tell the per_worktree setup which agent MCP configs to point at the
-        # worktree's Editor (dev + review may be different CLIs, each with its own
-        # config file). Omitted when no real profile is loaded so the plugin keeps
-        # its claude-code default.
-        agent_ids = self._engine_agent_ids()
-        if agent_ids:
-            env["BMAD_AUTO_ENGINE_AGENTS"] = ",".join(agent_ids)
-        try:
-            # operator-configured engine command (from the plugin TOML); shell=True
-            # is intentional, mirroring the deterministic verify commands.
-            proc = subprocess.run(  # nosec B602
-                command,
-                shell=True,
-                cwd=str(root),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=limit,
-            )
-            return proc.returncode, (proc.stdout + proc.stderr)[-2000:]
-        except subprocess.TimeoutExpired:
-            return -1, f"timed out after {limit}s"
-
-    def _engine_ready_gate(self, task: StoryTask, worktree: Path | None = None) -> bool:
-        """Block until the engine's Editor + MCP report ready before a unit runs.
-
-        Returns True to proceed; False when the gate fails — the unit is marked
-        DEFERRED and a notification sent, mirroring the worktree-open-failed path.
-        A no-op (True) when no plugin is configured or it declares no ready_cmd."""
-        self._emit("pre_ready_gate", task)
-        plugin = self._engine
-        if plugin is None or not plugin.ready_cmd:
-            self._emit("post_ready_gate", task)
-            return True
-        command = plugin.render(plugin.ready_cmd)
-        self.journal.append("engine-ready-wait", story_key=task.story_key, engine=plugin.name)
-        rc, tail = self._run_engine_hook(command, task, worktree=worktree)
-        if rc == 0:
-            self.journal.append("engine-ready", story_key=task.story_key, engine=plugin.name)
-            self._emit("post_ready_gate", task)
-            return True
-        reason = f"engine {plugin.name!r} Editor not ready (rc={rc}): {tail.strip()}"
-        self.journal.append("engine-not-ready", story_key=task.story_key, error=reason)
-        gates.notify(
-            self.policy, self.run_dir, f"engine Editor not ready: {task.story_key}", reason
-        )
-        task.defer_reason = reason
-        task.phase = Phase.DEFERRED
-        self._save()
-        return False
-
-    def _engine_worktree_setup(self, task: StoryTask, worktree: Path) -> bool:
-        """per_worktree: make the fresh worktree a usable engine project + launch
-        its managed Editor before the agent runs. Returns True to proceed; on
-        failure the unit is DEFERRED + a notification sent (mirrors the readiness
-        gate). No-op (True) outside per_worktree or when no setup_cmd is declared.
-
-        Isolation caveat: per_worktree launches a per-path Editor so the agent's
-        asset writes land in the worktree. But if a competing Editor on the *main*
-        project is open (or MCP routing resolves to it), Unity-generated assets
-        (.cs.meta GUIDs, asmdef auto-edits) can leak into the main checkout. That
-        dirties the merge target with the very files the branch already committed;
-        _merge_local now reconciles it (verify.clean_incoming_collisions). A deeper
-        fix — guaranteeing MCP only ever targets the worktree Editor — is a
-        follow-up, not handled here."""
-        plugin = self._engine
-        if (
-            plugin is None
-            or self.policy.engine.editor_mode != "per_worktree"
-            or not plugin.worktree_setup_cmd
-        ):
-            return True
-        command = plugin.render(plugin.worktree_setup_cmd)
-        self.journal.append("engine-setup", story_key=task.story_key, engine=plugin.name)
-        rc, tail = self._run_engine_hook(command, task, worktree=worktree)
-        if rc == 0:
-            self.journal.append("engine-setup-ok", story_key=task.story_key, engine=plugin.name)
-            return True
-        reason = f"engine {plugin.name!r} worktree setup failed (rc={rc}): {tail.strip()}"
-        self.journal.append("engine-setup-failed", story_key=task.story_key, error=reason)
-        gates.notify(
-            self.policy, self.run_dir, f"engine worktree setup failed: {task.story_key}", reason
-        )
-        task.defer_reason = reason
-        task.phase = Phase.DEFERRED
-        self._save()
-        return False
-
-    def _engine_worktree_teardown(self, task: StoryTask, worktree: Path) -> None:
-        """per_worktree: quit the unit's managed Editor + undo its setup. Best
-        effort — runs on success AND on pause/escalation so a live Editor is never
-        left dangling, and a teardown failure only logs (the unit's outcome stands).
-        No-op outside per_worktree or when no teardown_cmd is declared."""
-        plugin = self._engine
-        if (
-            plugin is None
-            or self.policy.engine.editor_mode != "per_worktree"
-            or not plugin.worktree_teardown_cmd
-        ):
-            return
-        command = plugin.render(plugin.worktree_teardown_cmd)
-        self.journal.append("engine-teardown", story_key=task.story_key, engine=plugin.name)
-        rc, tail = self._run_engine_hook(
-            command, task, worktree=worktree, timeout=self._ENGINE_TEARDOWN_TIMEOUT
-        )
-        if rc == 0:
-            self.journal.append("engine-teardown-ok", story_key=task.story_key, engine=plugin.name)
-        else:
-            self.journal.append(
-                "engine-teardown-failed", story_key=task.story_key, error=tail.strip()
-            )
+    def _gate_unit(self, task: StoryTask) -> bool:
+        """per_worktree gate: emit ``pre_worktree_setup`` then ``pre_ready_gate``
+        so a plugin (e.g. the Unity engine) can launch + wait for the unit's
+        managed Editor. Returns True to proceed; a veto at either stage routes the
+        unit to DEFERRED/PAUSE via ``_vetoed`` (which raises on pause) and returns
+        False. A zero-plugin run takes the O(1) fast path and proceeds."""
+        ctx = self._emit("pre_worktree_setup", task)
+        if self._vetoed(ctx, task):
+            return False
+        ctx = self._emit("pre_ready_gate", task)
+        if self._vetoed(ctx, task):
+            return False
+        self._emit("post_ready_gate", task)
+        return True
 
     # --------------------------------------------------------- plugin hook bus
 
@@ -873,6 +720,9 @@ class Engine:
             "repo_root": str(self.paths.repo_root),
             "run_dir": str(self.run_dir),
             "shared": self.state.plugin_shared,
+            # the dev + review CLI agent ids in this unit's worktree, for a plugin
+            # that routes per-agent config (the Unity engine's MCP routing).
+            "agents": tuple(self._engine_agent_ids()),
         }
         if task is not None:
             base.update(
@@ -974,15 +824,17 @@ class Engine:
         ctx = self._emit("pre_story", task)
         if self._vetoed(ctx, task):
             return
-        # shared-mode engine gate: the agent works in place, so the live Editor
-        # must be up before any session starts. (per_worktree gates inside
-        # _run_isolated, after that worktree's own Editor has been launched.)
-        if self._engine is not None and self.policy.engine.editor_mode == "shared":
-            if not self._engine_ready_gate(task):
-                return
         if self._isolated:
             self._run_isolated(task, self._drive_story)
         else:
+            # in-place (non-isolated) ready gate: a plugin (e.g. a shared-mode
+            # Unity engine) needs the live Editor up before any session starts.
+            # The per_worktree gate runs inside _run_isolated, after that
+            # worktree's own Editor has launched.
+            ctx = self._emit("pre_ready_gate", task)
+            if self._vetoed(ctx, task):
+                return
+            self._emit("post_ready_gate", task)
             self._drive_story(task)
         self._emit("post_story", task)
 

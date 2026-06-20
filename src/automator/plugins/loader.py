@@ -1,7 +1,7 @@
 """Discover + load plugin manifests (folder-drop now; entry-points later).
 
 Discovery walks three sources in overlay precedence — exactly the
-builtin-then-project pattern of ``load_engines``/``load_profiles``, with an
+builtin-then-project pattern of ``load_profiles`` (adapters/profile.py), with an
 entry-point source wedged in the middle as a locked future-additive seam:
 
     builtin (automator.data/plugins/*)         lowest precedence
