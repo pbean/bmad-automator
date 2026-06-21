@@ -253,6 +253,8 @@ bmad-auto init --project /path/to/project --force-skills
 
 Your `.automator/policy.toml` is left untouched on upgrade — new keys are optional and fall back to their defaults, so configs survive. Check the [CHANGELOG / releases](https://github.com/bmad-code-org/bmad-auto/releases) for what changed between tags.
 
+To remove bmad-auto from a project, see [Uninstalling](docs/setup-guide.md#uninstalling) — it reverses what `init` laid down (state, skills, hooks, gitignore) and uninstalls the tool.
+
 **Via the BMAD-method installer.** The installer also copies the five `bmad-auto-*` skills into your project (but not the orchestrator tool). Finish setup with `/bmad-auto-setup`, which installs the tool from Git, asks which coding CLIs to drive, registers their hooks (`init` skips the already-present skills), and runs the preflight:
 
 ```bash

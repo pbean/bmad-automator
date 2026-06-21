@@ -38,6 +38,12 @@ breaking changes may land in a minor release.
   [bmad-automator](https://github.com/bmad-code-org/bmad-automator) project is unrelated and stays
   as-is. Re-run `uv tool upgrade bmad-auto --reinstall` to move an existing install onto the new name.
 
+### Docs
+
+- **Uninstall procedure.** The [setup guide](docs/setup-guide.md#uninstalling) now documents a
+  full teardown — reclaim disk, remove `.automator/`, skills, hooks, and gitignore lines, then
+  `uv tool uninstall`.
+
 ## [0.5.0] — 2026-06-20
 
 ### Added

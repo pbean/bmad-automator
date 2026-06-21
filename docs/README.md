@@ -5,7 +5,7 @@ guides below go deeper, roughly in the order you'll need them.
 
 ## Using bmad-auto
 
-- **[Setup guide](setup-guide.md)** — install the tools, pick a CLI, initialize a project, and pass preflight.
+- **[Setup guide](setup-guide.md)** — install the tools, pick a CLI, initialize a project, pass preflight, and uninstall.
 - **[TUI guide](tui-guide.md)** — the dashboard: layout, key bindings, the settings editor, and troubleshooting.
 - **[Features & functionality](FEATURES.md)** — the full capability matrix and policy reference.
 
