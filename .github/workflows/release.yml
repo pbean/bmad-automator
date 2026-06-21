@@ -20,7 +20,7 @@ jobs:
     name: publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # need all tags to detect whether vX.Y.Z already exists
 

@@ -22,7 +22,7 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -43,7 +43,7 @@ jobs:
     name: version-sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -55,7 +55,7 @@ jobs:
     name: lint (trunk)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Trunk needs full history for diff-aware checks.
           fetch-depth: 0
