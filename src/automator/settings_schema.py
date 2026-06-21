@@ -17,10 +17,12 @@ Two shapes mirror the old screen vocabulary:
     label, description, its fields, and the owning plugin ("" for core).
 
 ``load_core_schema()`` parses the bundled core schema; ``build_registry(project,
-policy)`` returns it plus a rendered section for every *enabled* plugin that
-contributes ``[[settings]]`` (a plugin's section appears only when its name is in
-``[plugins] enabled``). The registry is what the settings screen consumes — it
-never reaches back into this module's internals.
+policy)`` returns it plus a ``PluginInfo`` for every *discovered* plugin — its
+enable state (membership in ``[plugins] enabled``), whether enabling it grants
+trust (a ``[python]`` module), and its ``[[settings]]`` fields. The screen groups
+these under a dedicated Plugins area; reading manifests never imports plugin
+Python. The registry is what the settings screen consumes — it never reaches
+back into this module's internals.
 """
 
 from __future__ import annotations
@@ -65,14 +67,13 @@ class SettingSpec:
 @dataclass(frozen=True)
 class SectionSpec:
     """A collapsible settings group. ``name`` is the policy.toml section key
-    (may be dotted, e.g. ``adapter.dev`` or ``plugins.<name>``); ``plugin`` names
-    the contributing plugin, "" for core."""
+    (may be dotted, e.g. ``adapter.dev``). Core only — plugin settings are
+    carried by ``PluginInfo``."""
 
     name: str
     fields: tuple[SettingSpec, ...]
     label: str = ""  # display label; falls back to name
     description: str = ""
-    plugin: str = ""
 
     @property
     def title(self) -> str:
@@ -81,19 +82,42 @@ class SectionSpec:
 
 
 @dataclass(frozen=True)
-class SettingsRegistry:
-    """Core schema plus enabled-plugin sections — the settings screen's source.
+class PluginInfo:
+    """One discovered plugin as the settings screen sees it: an enable toggle
+    (when trust-gated) plus its settings fields.
 
-    ``plugin_schemas`` maps each rendered plugin to its declared specs so the
-    screen can pass them to ``policy.loads`` for typed validation of the
-    ``[plugins.<name>]`` tables on save.
+    ``trust_needed`` is True for a plugin that declares an in-process ``[python]``
+    module — enabling it grants trust (its name enters ``[plugins] enabled``).
+    Data-only plugins are always active and carry no toggle. ``fields`` are this
+    plugin's settings under ``plugins.<name>``; they render whether or not the
+    plugin is enabled (the screen greys them until enabled)."""
+
+    name: str
+    description: str
+    enabled: bool
+    trust_needed: bool
+    fields: tuple[SettingSpec, ...] = ()
+
+
+@dataclass(frozen=True)
+class SettingsRegistry:
+    """Core schema plus a PluginInfo per discovered plugin — the settings
+    screen's source.
+
+    ``plugin_schemas`` maps each plugin that contributes settings to its declared
+    specs so the screen can pass them to ``policy.loads`` for typed validation of
+    the ``[plugins.<name>]`` tables on save (every discovered plugin, since
+    settings are data that may be set whether or not the plugin is enabled).
     """
 
     sections: tuple[SectionSpec, ...]
+    plugins: tuple[PluginInfo, ...] = ()
     plugin_schemas: dict[str, tuple[PluginSettingSpec, ...]] = field(default_factory=dict)
 
     def fields(self) -> tuple[SettingSpec, ...]:
-        return tuple(f for s in self.sections for f in s.fields)
+        core = tuple(f for s in self.sections for f in s.fields)
+        plugin = tuple(f for p in self.plugins for f in p.fields)
+        return core + plugin
 
 
 # --------------------------------------------------------------- ref resolution
@@ -174,9 +198,9 @@ def load_core_schema() -> tuple[SectionSpec, ...]:
 # ------------------------------------------------------------- plugin sections
 
 
-def _plugin_section(name: str, specs: tuple[PluginSettingSpec, ...], desc: str) -> SectionSpec:
+def _plugin_fields(name: str, specs: tuple[PluginSettingSpec, ...]) -> tuple[SettingSpec, ...]:
     section = f"plugins.{name}"
-    fields = tuple(
+    return tuple(
         SettingSpec(
             section=section,
             key=s.key,
@@ -190,23 +214,36 @@ def _plugin_section(name: str, specs: tuple[PluginSettingSpec, ...], desc: str) 
         )
         for s in specs
     )
-    return SectionSpec(name=section, fields=fields, label=name, description=desc, plugin=name)
 
 
 def build_registry(project: Path | None = None, policy: Any = None) -> SettingsRegistry:
-    """Core schema, plus a section for every *enabled* plugin contributing
-    settings. A plugin's section renders only when its name is in
-    ``policy.plugins.enabled`` — settings rendering reads manifests only and
-    never imports/executes plugin Python (that stays trust-gated for hooks)."""
-    sections = list(load_core_schema())
+    """Core schema, plus a PluginInfo for every *discovered* plugin.
+
+    Every plugin found by discovery is surfaced so the screen can offer an enable
+    toggle (membership in ``[plugins] enabled``) and group its settings. Reading
+    manifests never imports/executes plugin Python — that stays trust-gated for
+    hooks. A plugin's settings are data that render whether or not it is enabled
+    (the screen greys them until enabled), so ``plugin_schemas`` covers every
+    plugin that contributes settings, making each ``[plugins.<name>]`` table
+    typed on save regardless of toggle state."""
+    sections = load_core_schema()
+    enabled = set(getattr(getattr(policy, "plugins", None), "enabled", ()) or ())
+    manifests = load_plugins(project)
+    plugins: list[PluginInfo] = []
     plugin_schemas: dict[str, tuple[PluginSettingSpec, ...]] = {}
-    enabled = tuple(getattr(getattr(policy, "plugins", None), "enabled", ()) or ())
-    if enabled:
-        manifests = load_plugins(project)
-        for name in enabled:
-            manifest = manifests.get(name)
-            if manifest is None or not manifest.settings:
-                continue
-            sections.append(_plugin_section(name, manifest.settings, manifest.description))
+    for name in sorted(manifests):
+        manifest = manifests[name]
+        plugins.append(
+            PluginInfo(
+                name=name,
+                description=manifest.description,
+                enabled=name in enabled,
+                trust_needed=manifest.python is not None,
+                fields=_plugin_fields(name, manifest.settings),
+            )
+        )
+        if manifest.settings:
             plugin_schemas[name] = manifest.settings
-    return SettingsRegistry(sections=tuple(sections), plugin_schemas=plugin_schemas)
+    return SettingsRegistry(
+        sections=sections, plugins=tuple(plugins), plugin_schemas=plugin_schemas
+    )

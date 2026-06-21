@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standardized release driver for ``bmad-automator``.
+"""Standardized release driver for ``bmad-auto``.
 
 This is the deterministic engine behind the release flow. It does *not* own the
 version regexes — :mod:`sync_version` is the single source of truth for the
@@ -9,8 +9,8 @@ asset generators, the CHANGELOG, git, and ``gh``.
 The flow is two-phase:
 
 * ``prepare X.Y.Z`` runs on a feature/release branch. It validates the CHANGELOG
-  section for the target version (the human/`/bmad-release` skill curates it
-  *before* calling this), stamps the version everywhere via ``sync_version.py``,
+  section for the target version (the human curates it *before* calling this),
+  stamps the version everywhere via ``sync_version.py``,
   regenerates screenshots + demo *only* when ``src/automator/tui`` changed since
   the last tag, and commits the result — leaving the branch ready for a PR.
 * ``publish`` runs on ``main`` after the PR merges (driven by
@@ -62,7 +62,7 @@ STAMPED_PATHS = [
 ]
 ASSET_PATH = "docs/images"
 
-DEFAULT_REPO_URL = "https://github.com/pbean/bmad-automator"
+DEFAULT_REPO_URL = "https://github.com/bmad-code-org/bmad-auto"
 
 
 # --------------------------------------------------------------------------- #
@@ -175,7 +175,7 @@ def repo_url() -> str:
         origin = _git_out("remote", "get-url", "origin")
     except subprocess.CalledProcessError:
         return DEFAULT_REPO_URL
-    # git@github.com:pbean/bmad-automator.git  ->  https://github.com/pbean/bmad-automator
+    # git@github.com:bmad-code-org/bmad-auto.git  ->  https://github.com/bmad-code-org/bmad-auto
     m = re.match(r"^git@([^:]+):(.+?)(?:\.git)?$", origin)
     if m:
         return f"https://{m.group(1)}/{m.group(2)}"

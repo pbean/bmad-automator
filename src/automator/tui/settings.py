@@ -62,15 +62,33 @@ class PolicyDoc:
             return
         self._table(section, create=True)[key] = value
 
-    def validate(self, plugin_schemas: dict[str, Any] | None = None) -> str | None:
+    def validate(
+        self,
+        plugin_schemas: dict[str, Any] | None = None,
+        project: Path | None = None,
+    ) -> str | None:
         """Authoritative validation via policy.loads(); None when valid.
 
         ``plugin_schemas`` (plugin name -> setting specs) lets the round-trip
-        also type-check any [plugins.<name>] tables the screen rendered."""
+        also type-check any [plugins.<name>] tables the screen rendered. When
+        ``project`` is given, every enabled in-process plugin additionally
+        self-validates against the parsed policy (Plugin.validate) — the same
+        coupling check the engine runs at startup (e.g. the Unity plugin's
+        editor_mode↔scm.isolation rule) — so an incompatible combination is
+        caught at save time rather than mid-run. Building the registry imports
+        only the plugins already trusted in [plugins] enabled."""
         try:
-            policy_mod.loads(self.dumps(), plugin_schemas=plugin_schemas)
+            pol = policy_mod.loads(self.dumps(), plugin_schemas=plugin_schemas)
         except policy_mod.PolicyError as e:
             return str(e)
+        if project is not None:
+            from ..plugins.model import PluginError
+            from ..plugins.registry import PluginRegistry
+
+            try:
+                PluginRegistry.build(project, pol).validate(pol)
+            except (policy_mod.PolicyError, PluginError) as e:
+                return str(e)
         return None
 
     def dumps(self) -> str:

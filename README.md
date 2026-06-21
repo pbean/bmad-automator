@@ -6,10 +6,11 @@
 
 Plain Python drives the loop — **pick story → implement → adversarially review → verify → commit** — while LLMs do only the creative work, inside disposable, fresh-context coding-agent sessions you can attach to and watch.
 
-[![CI](https://github.com/pbean/bmad-automator/actions/workflows/ci.yml/badge.svg)](https://github.com/pbean/bmad-automator/actions/workflows/ci.yml)
+[![CI](https://github.com/bmad-code-org/bmad-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/bmad-code-org/bmad-auto/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)
 ![CLIs](https://img.shields.io/badge/agents-claude%20%C2%B7%20codex%20%C2%B7%20gemini-8a2be2)
 ![No LLM in the loop](https://img.shields.io/badge/control%20loop-deterministic-success)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 <img src="docs/images/dashboard.png" alt="The bmad-auto TUI dashboard: run picker, sprint tree, deferred-work ledger, a live per-story task table, and a colour-coded journal." width="900">
 
@@ -25,7 +26,7 @@ Plain Python drives the loop — **pick story → implement → adversarially re
 
 ## Why bmad-auto
 
-Inspired by the official [bmad-automator](https://github.com/bmad-code-org/bmad-automator), it takes a token-optimized approach in which the orchestrator is ordinary code rather than an LLM session in the control loop:
+Inspired by the original [bmad-automator](https://github.com/bmad-code-org/bmad-automator) (a separate, legacy project), it takes a token-optimized approach in which the orchestrator is ordinary code rather than an LLM session in the control loop:
 
 - 🧠 **No LLM in the control loop.** Story selection, retry budgets, gates, and completion checks are code, not prompts — so they're deterministic, debuggable, and free.
 - 📡 **No pane-scraping.** Coding-agent hooks (`Stop` / `SessionStart` / `SessionEnd` / `PreCompact`) write structured event files the orchestrator watches; skills in automation mode write a machine-readable `result.json` at the end of each workflow.
@@ -57,22 +58,23 @@ bmad-auto tui                    # …or drive everything from the dashboard
 
 ## Command reference
 
-| Command                       | What it does                                                                                                                                                                                                                                                                                                                           |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bmad-auto init`              | Install the bundled `bmad-auto-*` skills, the hook relay, `.automator/policy.toml`, and a runs-dir gitignore. `--cli <profile>` (repeatable) targets specific agents; `--no-skills` / `--force-skills` control skill copying.                                                                                                          |
-| `bmad-auto validate`          | Preflight every prerequisite: BMAD config, sprint-status, git, tmux, CLI binary, hook registration.                                                                                                                                                                                                                                    |
-| `bmad-auto run`               | Drive the dev → review → verify → commit loop. `--epic N`, `--story KEY`, `--max-stories N`, `--dry-run`.                                                                                                                                                                                                                              |
-| `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                                                                                                                                     |
-| `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                                                                                                                          |
-| `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                                                                                                                              |
-| `bmad-auto decisions`         | Answer deferred-work decisions earlier sweeps left unanswered (skipped by `--no-prompt`, or an abandoned interactive sweep). Recorded so the next sweep acts on them without re-asking. `--list` shows them without answering.                                                                                                         |
-| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals (plus a count of decisions awaiting an answer).                                                                                                                                                                                                                                       |
-| `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                                                                                                                             |
-| `bmad-auto stop <run-id>`     | Stop a live run — the engine and its agent tmux session.                                                                                                                                                                                                                                                                               |
-| `bmad-auto delete <run-id>`   | Delete a run directory. `--force` stops the run first if it is still live.                                                                                                                                                                                                                                                             |
-| `bmad-auto archive <run-id>`  | Compress a run into `.automator/archive` and remove the run dir. `--force` stops the run first if it is still live.                                                                                                                                                                                                                    |
-| `bmad-auto cleanup`           | Remove leftover tmux artifacts **for the current project**: kill `bmad-auto-<id>` sessions for finished/stopped/interrupted runs (and orphans whose run dir is gone) and close parked `bmad-auto-ctl` windows. `--dry-run` lists without killing. Live runs — and any session/window belonging to another project — are never touched. |
-| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra). `--low-frame-rate` caps it to 15fps + disables animations (fixes repaint tearing over slow/SSH links; also `[tui] low_frame_rate`).                                                                                                                                               |
+| Command                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bmad-auto init`              | Install the bundled `bmad-auto-*` skills, the hook relay, `.automator/policy.toml`, and a runs-dir gitignore. `--cli <profile>` (repeatable) targets specific agents; `--no-skills` / `--force-skills` control skill copying.                                                                                                                                                                                                                                                      |
+| `bmad-auto validate`          | Preflight every prerequisite: BMAD config, sprint-status, git, tmux, CLI binary, hook registration.                                                                                                                                                                                                                                                                                                                                                                                |
+| `bmad-auto run`               | Drive the dev → review → verify → commit loop. `--epic N`, `--story KEY`, `--max-stories N`, `--dry-run`.                                                                                                                                                                                                                                                                                                                                                                          |
+| `bmad-auto sweep`             | Triage + execute open `deferred-work.md` entries. `--no-prompt`, `--decisions-only`, `--max-bundles N`, `--repeat`, `--max-cycles N`, `--dry-run`.                                                                                                                                                                                                                                                                                                                                 |
+| `bmad-auto resume <run-id>`   | Continue a run paused at a gate, escalation, or interruption.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `bmad-auto resolve <run-id>`  | Resolve a CRITICAL escalation: open an interactive resolve agent to fix the frozen spec, then re-arm the story and resume. `--story KEY`, `--no-interactive`, `--resume` / `--no-resume`.                                                                                                                                                                                                                                                                                          |
+| `bmad-auto decisions`         | Answer deferred-work decisions earlier sweeps left unanswered (skipped by `--no-prompt`, or an abandoned interactive sweep). Recorded so the next sweep acts on them without re-asking. `--list` shows them without answering.                                                                                                                                                                                                                                                     |
+| `bmad-auto status [<run-id>]` | Run + sprint summary with per-story token totals (plus a count of decisions awaiting an answer).                                                                                                                                                                                                                                                                                                                                                                                   |
+| `bmad-auto attach [<run-id>]` | tmux-attach to a run's live agent session.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `bmad-auto stop <run-id>`     | Stop a live run — the engine and its agent tmux session.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `bmad-auto delete <run-id>`   | Delete a run directory. `--force` stops the run first if it is still live.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `bmad-auto archive <run-id>`  | Compress a run into `.automator/archive` and remove the run dir. `--force` stops the run first if it is still live.                                                                                                                                                                                                                                                                                                                                                                |
+| `bmad-auto cleanup`           | Remove leftover tmux artifacts **for the current project**: kill `bmad-auto-<id>` sessions for finished/stopped/interrupted runs (and orphans whose run dir is gone) and close parked `bmad-auto-ctl` windows. `--dry-run` lists without killing. Live runs — and any session/window belonging to another project — are never touched.                                                                                                                                             |
+| `bmad-auto clean`             | Reclaim **disk** from concluded runs per `[cleanup]`: tear down git worktrees a mid-flight stop orphaned (freeing their Unity `Library/` + MCP-server builds), trim the heavy `worktrees/` tree from runs kept for history (they stay viewable in the TUI), and archive/delete runs past the retention window. Only finished/stopped runs are touched; `--dry-run` previews, `--keep <run-id>` protects, `--retain N` overrides the window, `--hard` deletes instead of archiving. |
+| `bmad-auto tui`               | The interactive dashboard (needs the `[tui]` extra). `--low-frame-rate` caps it to 15fps + disables animations (fixes repaint tearing over slow/SSH links; also `[tui] low_frame_rate`).                                                                                                                                                                                                                                                                                           |
 
 Every command takes `--project <dir>` (default: the current directory).
 
@@ -204,7 +206,7 @@ Bundle dev sessions can themselves append new deferred entries (split-off goals,
 
 ## Installing the skill module
 
-The orchestrator drives its own forks of the BMAD dev/review skills — your standard BMAD install is never modified. The five skills are bundled in the `bmad-automator` wheel (canonical source: `src/automator/data/skills/`, BMAD module code `bauto`) so `bmad-auto init` lays them down for you:
+The orchestrator drives its own forks of the BMAD dev/review skills — your standard BMAD install is never modified. The five skills are bundled in the `bmad-auto` wheel (canonical source: `src/automator/data/skills/`, BMAD module code `bauto`) so `bmad-auto init` lays them down for you:
 
 | Skill               | Role                                                                      |
 | ------------------- | ------------------------------------------------------------------------- |
@@ -218,10 +220,10 @@ The orchestrator drives its own forks of the BMAD dev/review skills — your sta
 
 ```bash
 # latest from main (tracks HEAD — newest features, less stable):
-uv tool install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
+uv tool install "bmad-auto[tui] @ git+https://github.com/bmad-code-org/bmad-auto.git"
 
 # OR a pinned release tag (reproducible — recommended for day-to-day use):
-uv tool install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git@v0.3.0"
+uv tool install "bmad-auto[tui] @ git+https://github.com/bmad-code-org/bmad-auto.git@v0.5.1"
 
 bmad-auto init --project /path/to/project --cli claude   # add --cli codex/gemini as needed
 claude "/bmad-auto-setup accept all defaults"            # registers _bmad/ config + help
@@ -242,15 +244,17 @@ claude "/bmad-auto-setup upgrade"
 ```bash
 # 1. upgrade the tool. --reinstall is required for a git source: a plain
 #    `uv tool upgrade` reuses the cached commit and won't pull new code.
-uv tool upgrade bmad-automator --reinstall                 # follows main or your pinned tag
+uv tool upgrade bmad-auto --reinstall                      # follows main or your pinned tag
 #    to move to a newer tag, re-run install with the new ref:
-#    uv tool install --force "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git@v0.3.0"
+#    uv tool install --force "bmad-auto[tui] @ git+https://github.com/bmad-code-org/bmad-auto.git@v0.5.1"
 
 # 2. re-lay the refreshed skills into EACH project that uses bmad-auto:
 bmad-auto init --project /path/to/project --force-skills
 ```
 
-Your `.automator/policy.toml` is left untouched on upgrade — new keys are optional and fall back to their defaults, so configs survive. Check the [CHANGELOG / releases](https://github.com/pbean/bmad-automator/releases) for what changed between tags.
+Your `.automator/policy.toml` is left untouched on upgrade — new keys are optional and fall back to their defaults, so configs survive. Check the [CHANGELOG / releases](https://github.com/bmad-code-org/bmad-auto/releases) for what changed between tags.
+
+To remove bmad-auto from a project, see [Uninstalling](docs/setup-guide.md#uninstalling) — it reverses what `init` laid down (state, skills, hooks, gitignore) and uninstalls the tool.
 
 **Via the BMAD-method installer.** The installer also copies the five `bmad-auto-*` skills into your project (but not the orchestrator tool). Finish setup with `/bmad-auto-setup`, which installs the tool from Git, asks which coding CLIs to drive, registers their hooks (`init` skips the already-present skills), and runs the preflight:
 
@@ -318,6 +322,14 @@ max_triage_attempts = 2    # triage validation retries before escalating
 max_migration_attempts = 2 # legacy-ledger migration retries before escalating
 repeat = false             # re-triage after each cycle, continue on new deferred work
 max_cycles = 5             # safety cap on cycles per sweep run when repeat = true
+
+[cleanup]                  # disk reclamation for .automator/runs (terminal runs only)
+run_retention = 10         # newest concluded runs kept whole; older ones trimmed/archived by `clean` (0 = none)
+retention_days = 0         # 0 = off; else also keep runs newer than N days regardless of count
+trim_artifacts = true      # drop the heavy worktrees/ tree from concluded runs (run stays viewable in the TUI)
+archive_old = true         # archive (vs hard-delete) runs past the window
+auto_clean_on_finish = true # reconcile worktrees leaked by a mid-flight stop at each run/sweep start
+clean_tmp = true           # let engine plugins clean their /tmp scratch on finish (e.g. Unity MCP zips)
 
 [scm]                      # source-control isolation + merge-back; defaults = work in place
 isolation = "none"         # none | worktree
@@ -462,3 +474,11 @@ The hero **demo GIF** (`docs/images/demo.gif`) is generated the same headless wa
 - **[docs/tui-guide.md](docs/tui-guide.md)** — the complete TUI reference.
 - **[src/automator/data/skills/README.md](src/automator/data/skills/README.md)** — the `bauto` skill module overview.
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — planned/deferred orchestrator work and the rationale behind it.
+
+## Contributing
+
+Contributions are welcome. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — for anything bigger than a typo or small bug fix, talk to a maintainer on [Discord](https://discord.gg/gk8jAdXWmj) first. By participating you agree to our [Code of Conduct](.github/CODE_OF_CONDUCT.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## License
+
+bmad-auto is released under the [MIT License](LICENSE), © BMad Code, LLC. The BMad name and brand are trademarks of BMad Code, LLC and are **not** covered by the MIT License — see [TRADEMARK.md](TRADEMARK.md).

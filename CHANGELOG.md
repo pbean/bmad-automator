@@ -1,9 +1,60 @@
 # Changelog
 
-All notable changes to `bmad-automator` are documented here. The format is based on
+All notable changes to `bmad-auto` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the project is pre-1.0,
 breaking changes may land in a minor release.
+
+## [0.5.1] — 2026-06-20
+
+### Added
+
+- **`bmad-auto clean` + `[cleanup]` retention.** Reclaims disk from concluded runs: tears down
+  git worktrees a mid-flight stop orphaned (freeing each worktree's Unity `Library/` + MCP-server
+  build — the main accumulation source), trims the heavy `worktrees/` tree from runs kept for
+  history (they still list in the TUI), and archives/deletes runs past `[cleanup] run_retention`
+  (default 10). Only finished/stopped runs are touched; `--keep`/`--dry-run`/`--retain`/`--hard`.
+  Every `run`/`sweep` start auto-reconciles worktrees a prior **finished** run leaked
+  (`auto_clean_on_finish`); the Unity plugin's new `post_run` hook clears the IvanMurzak MCP
+  server's `/tmp/<company>/<product>/*.zip` downloads + truncates its editor log (`clean_tmp`).
+- **Test Architect (TEA) plugin.** New bundled, opt-in `tea` plugin that wires the BMAD
+  Test Architect Enterprise module into every run and sweep as advisory-by-default quality steps.
+  Enable with `[plugins] enabled = ["tea"]`; it injects six TEA workflows — test-design, ATDD,
+  automate (after dev) and trace, NFR, test-review (after review) — and fails fast at startup if
+  TEA isn't installed (`npx bmad-method install` → Test Architect). Each step is individually
+  toggleable; the three gate steps (`trace`/`nfr`/`review`) can be flipped to **blocking**, so a
+  failing FAIL/CONCERNS gate escalates the unit for human review at commit instead of landing
+  (fail-open: a missing or unparseable artifact never blocks). See the
+  [TEA plugin guide](docs/tea-plugin-guide.md).
+- **Settings-driven workflow `enabled` / `blocking`.** A plugin can let an operator disable a
+  `[workflows.<name>]` step or flip its gate from policy via the `<name>_enabled` / `<name>_blocking`
+  setting convention — no code, and byte-identical for plugins that don't declare them. Documented
+  in the [plugin authoring guide](docs/plugin-authoring-guide.md#making-a-workflow-configurable).
+- **Manage plugins from the TUI.** The settings screen (`g`) gains a **Plugins** section: a roster
+  of every discovered plugin with an enable toggle (writing `[plugins] enabled`). A plugin's
+  settings appear only once it is enabled — revealed live, hidden otherwise — so the form stays
+  scannable; data-only plugins are always on. Saving now also runs each enabled plugin's coupling
+  check (e.g. unity `editor_mode` ↔ `scm.isolation`), blocking an invalid combo at save time
+  instead of mid-run.
+
+- **MIT license + open-source community files.** The project is now MIT-licensed (© BMad Code, LLC)
+  with a trademark notice, and ships `CONTRIBUTING`, `SECURITY`, `CODE_OF_CONDUCT`, and GitHub
+  issue/PR templates as it becomes a first-class citizen in the BMAD org.
+
+### Changed
+
+- **Renamed the project and package to `bmad-auto`.** The distributable is now `bmad-auto`
+  (install with `uv tool install 'bmad-auto[tui]'`) and the repo has moved to the BMAD org at
+  [bmad-code-org/bmad-auto](https://github.com/bmad-code-org/bmad-auto). The CLI command, skills
+  (`bmad-auto-*`), tmux sessions, and `BMAD_AUTO_*` env vars are unchanged. The separate legacy
+  [bmad-automator](https://github.com/bmad-code-org/bmad-automator) project is unrelated and stays
+  as-is. Re-run `uv tool upgrade bmad-auto --reinstall` to move an existing install onto the new name.
+
+### Docs
+
+- **Uninstall procedure.** The [setup guide](docs/setup-guide.md#uninstalling) now documents a
+  full teardown — reclaim disk, remove `.automator/`, skills, hooks, and gitignore lines, then
+  `uv tool uninstall`.
 
 ## [0.5.0] — 2026-06-20
 
@@ -345,14 +396,15 @@ enforced in CI.
   implementation phase, driven by a Python control loop with hook-based session transport and
   resumable on-disk run state.
 
-[0.5.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.5.0
-[0.4.4]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.4
-[0.4.3]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.3
-[0.4.2]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.2
-[0.4.1]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.1
-[0.4.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.4.0
-[0.3.2]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.2
-[0.3.1]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.1
-[0.3.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.3.0
-[0.2.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.2.0
-[0.1.0]: https://github.com/pbean/bmad-automator/releases/tag/v0.1.0
+[0.5.1]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.5.1
+[0.5.0]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.5.0
+[0.4.4]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.4.4
+[0.4.3]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.4.3
+[0.4.2]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.4.2
+[0.4.1]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.4.1
+[0.4.0]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.4.0
+[0.3.2]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.3.2
+[0.3.1]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.3.1
+[0.3.0]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.3.0
+[0.2.0]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.2.0
+[0.1.0]: https://github.com/bmad-code-org/bmad-auto/releases/tag/v0.1.0

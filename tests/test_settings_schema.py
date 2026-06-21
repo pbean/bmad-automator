@@ -23,6 +23,7 @@ from automator.policy import (
     RETRO_MODES,
     SWEEP_AUTO_MODES,
     AdapterPolicy,
+    CleanupPolicy,
     GatesPolicy,
     LimitsPolicy,
     NotifyPolicy,
@@ -51,6 +52,7 @@ SECTION_DC = {
     "adapter.triage": StageAdapterPolicy,
     "sweep": SweepPolicy,
     "scm": ScmPolicy,
+    "cleanup": CleanupPolicy,
     "tui": TuiPolicy,
 }
 
@@ -134,29 +136,38 @@ def test_core_schema_ships_in_installed_context():
 # ------------------------------------------------------------- plugin render
 
 
-def test_plugin_section_renders_only_when_enabled():
-    disabled = build_registry(None, Policy())
-    assert not any(s.plugin for s in disabled.sections)
-    assert not disabled.plugin_schemas
-
-    pol = policy_mod.loads('[plugins]\nenabled = ["example"]\n')
-    enabled = build_registry(None, pol)
-    example = next((s for s in enabled.sections if s.plugin == "example"), None)
+def test_every_discovered_plugin_is_listed_with_settings():
+    """Every discovered plugin is surfaced (not just enabled ones) so the screen
+    can offer an enable toggle. A data-only plugin's settings render regardless;
+    its fields and schema are present whether or not it is enabled."""
+    reg = build_registry(None, Policy())
+    example = next((p for p in reg.plugins if p.name == "example"), None)
     assert example is not None
-    assert example.name == "plugins.example"
+    assert example.enabled is False  # not in [plugins] enabled
+    assert example.trust_needed is False  # data-only: no [python], no toggle
     assert [f.key for f in example.fields] == ["greeting"]
     greeting = example.fields[0]
+    assert greeting.section == "plugins.example"
     assert greeting.widget_id == "plugins-example-greeting"  # dotted -> dashed, unchanged
     assert greeting.kind == "str" and greeting.default == "hello"
-    assert "example" in enabled.plugin_schemas
+    # plugin_schemas cover every plugin contributing settings, so [plugins.<name>]
+    # tables are typed on save even when the plugin is not enabled.
+    assert "example" in reg.plugin_schemas
 
 
-def test_plugin_section_appended_after_core_sections():
-    pol = policy_mod.loads('[plugins]\nenabled = ["example"]\n')
-    reg = build_registry(None, pol)
+def test_enabled_state_reflects_policy():
+    on = build_registry(None, policy_mod.loads('[plugins]\nenabled = ["example"]\n'))
+    assert next(p for p in on.plugins if p.name == "example").enabled is True
+    off = build_registry(None, Policy())
+    assert next(p for p in off.plugins if p.name == "example").enabled is False
+
+
+def test_plugins_are_separate_from_core_sections():
+    reg = build_registry(None, Policy())
     names = [s.name for s in reg.sections]
-    assert names[-1] == "plugins.example"  # plugins come after the core schema
     assert names[0] == "gates"
+    assert not any(n.startswith("plugins.") for n in names)  # plugins live in .plugins
+    assert {p.name for p in reg.plugins} >= {"example", "unity"}
 
 
 # ----------------------------------------------------- policy storage / accessor
@@ -211,16 +222,15 @@ def test_template_has_no_plugin_settings_tables():
 # ---------------------------------------------- engine-is-now-a-plugin (Unity)
 
 
-def test_unity_plugin_settings_render_when_enabled():
-    """The game-engine layer's settings now render from the unity plugin schema
-    under [plugins.unity] — only when unity is enabled."""
-    off = build_registry(None, Policy())
-    assert not any(s.plugin == "unity" for s in off.sections)
-
-    pol = policy_mod.loads('[plugins]\nenabled = ["unity"]\n')
-    reg = build_registry(None, pol)
-    unity = next((s for s in reg.sections if s.plugin == "unity"), None)
-    assert unity is not None and unity.name == "plugins.unity"
+def test_unity_plugin_is_trust_gated_and_renders_settings():
+    """The game-engine layer's settings render from the unity plugin schema under
+    [plugins.unity]. Unity declares a [python] module, so it is trust-gated
+    (carries an enable toggle) and its settings are listed whether enabled or not."""
+    reg = build_registry(None, Policy())
+    unity = next((p for p in reg.plugins if p.name == "unity"), None)
+    assert unity is not None
+    assert unity.trust_needed is True  # has [python] -> enabling grants trust
+    assert unity.enabled is False
     keys = [f.key for f in unity.fields]
     assert keys == ["editor_mode", "mcp", "unity_path", "ready_timeout_sec", "ready_grace_sec"]
     editor_mode = next(f for f in unity.fields if f.key == "editor_mode")

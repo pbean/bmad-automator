@@ -1,6 +1,6 @@
 # Setup guide
 
-This module is two things: the five `bmad-auto-*` skills and the `bmad-automator`
+This module is two things: the five `bmad-auto-*` skills and the `bmad-auto`
 orchestrator tool (the Python program that actually drives the loop). The skills do
 nothing on their own — the orchestrator is what spawns the fresh coding-CLI sessions
 that invoke `bmad-auto-dev`, `bmad-auto-review`, `bmad-auto-sweep`, and
@@ -21,7 +21,7 @@ The BMAD-method installer copies the five `bmad-auto-*` skill directories into y
 project. It does **not** carry the orchestrator tool — the installer copies only skill
 directories, not their sibling files, so the tool can't ride along in the skill folder.
 It is installed separately from Git by the setup skill. The canonical source is
-<https://github.com/pbean/bmad-automator>. (Going the other way, the tool's wheel
+<https://github.com/bmad-code-org/bmad-auto>. (Going the other way, the tool's wheel
 bundles the skills, so `bmad-auto init` can install them without the BMAD installer —
 when the installer already placed them, `init` simply skips the existing copies.)
 
@@ -36,9 +36,9 @@ claude "/bmad-auto-setup accept all defaults"
 1. Merges the module's config into `_bmad/config.yaml` (+ personal settings into the
    gitignored `_bmad/config.user.yaml`) and registers its help entries in
    `_bmad/module-help.csv`.
-2. Installs **or upgrades** the `bmad-automator` tool from Git (see
+2. Installs **or upgrades** the `bmad-auto` tool from Git (see
    [Installing the tool and TUI](#installing-the-tool-and-tui)). On an upgrade it runs
-   `uv tool upgrade bmad-automator --reinstall`.
+   `uv tool upgrade bmad-auto --reinstall`.
 3. Asks **which coding CLI(s)** the orchestrator should drive, then runs `bmad-auto init`
    to install the `bmad-auto-*` skills + register hooks + write the `.automator/policy.toml`
    template + add gitignore entries (see [Choosing which CLIs to drive](#choosing-which-clis-to-drive)
@@ -103,7 +103,7 @@ The `[tui]` extra pulls in the Textual dashboard (`textual` + `tomlkit` + `pyte`
 **Together (recommended):**
 
 ```bash
-uv tool install "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
+uv tool install "bmad-auto[tui] @ git+https://github.com/bmad-code-org/bmad-auto.git"
 ```
 
 **Tool first, TUI later (separately):** install the core without the extra, then add the
@@ -111,14 +111,14 @@ dashboard whenever you want it by re-running the same command **with** `[tui]`:
 
 ```bash
 # core tool only
-uv tool install "bmad-automator @ git+https://github.com/pbean/bmad-automator.git"
+uv tool install "bmad-auto @ git+https://github.com/bmad-code-org/bmad-auto.git"
 
 # add the TUI later — re-run with the extra (uv upgrades the install in place)
-uv tool install --upgrade "bmad-automator[tui] @ git+https://github.com/pbean/bmad-automator.git"
+uv tool install --upgrade "bmad-auto[tui] @ git+https://github.com/bmad-code-org/bmad-auto.git"
 ```
 
 Until the extra is present, `bmad-auto tui` prints a clear error
-(`the TUI requires optional dependencies — uv tool install 'bmad-automator[tui]'`) rather than
+(`the TUI requires optional dependencies — uv tool install 'bmad-auto[tui]'`) rather than
 failing obscurely.
 
 `uv tool install` drops `bmad-auto` into uv's own managed tool environment, so there's no
@@ -126,7 +126,7 @@ PEP 668 externally-managed conflict and no need for a virtualenv, `--user`, or `
 
 To upgrade later, the simplest path is to re-run `/bmad-auto-setup` (or `/bmad-auto-setup
 upgrade`) — it detects the existing install, upgrades the tool with `uv tool upgrade
-bmad-automator --reinstall` (the `--reinstall` is **required** for a git source — a plain
+bmad-auto --reinstall` (the `--reinstall` is **required** for a git source — a plain
 `uv tool upgrade` reuses the cached commit and won't pull new code), and re-lays the
 per-project skills with `bmad-auto init --force-skills`. To do it by hand, run those two
 commands yourself (see the [Upgrading](../README.md#upgrading) section of the README).
@@ -187,3 +187,90 @@ output as a readiness checklist, not an install failure.
 
 For the dashboard itself, see [docs/tui-guide.md](tui-guide.md). For the full policy
 reference, see the [Policy section](../README.md#policy-automatorpolicytoml) of the README.
+
+## Uninstalling
+
+Removing bmad-auto is the inverse of [`bmad-auto init`](#initializing-clis-other-than-claude):
+undo what it laid down (the `.automator/` state, the per-CLI hooks and skills, the gitignore
+lines), then uninstall the tool. There is no `bmad-auto uninstall` command — the steps below
+are the documented manual procedure. Work **inside the project root**, and reclaim disk
+**before** deleting state so no worktrees or archives are orphaned.
+
+Two paths overlap: every project does steps 1–5 and 7; only projects set up through the
+**BMAD-method installer** (i.e. that ran `/bmad-auto-setup`) also need step 6.
+
+### 1. Reclaim run disk first
+
+Tear down any leftover worktrees, tmux sessions, and archived runs while the tool is still
+installed — once `.automator/` is gone these are unreachable:
+
+```bash
+bmad-auto clean --hard --project <project-root>   # delete every concluded run + its worktrees
+bmad-auto cleanup --project <project-root>         # kill leftover tmux sessions/windows
+```
+
+`clean --hard` permanently deletes runs instead of archiving them (we're removing the tool, so
+there's nothing to keep). See the disk-reclamation coverage in
+[docs/FEATURES.md](FEATURES.md) and the [command reference](../README.md#command-reference) for
+what each command touches. Make sure no run is still live (Editor open, session attached) first.
+
+### 2. Remove the orchestrator state
+
+Delete the `.automator/` directory. This removes the hook relay script
+(`.automator/bmad_auto_hook.py`), the `policy.toml` template, and all per-run state
+(`runs/`, `cache/`, `archive/`) in one step:
+
+```bash
+rm -rf .automator/
+```
+
+### 3. Remove the bundled skills
+
+`init` installed exactly five `bmad-auto-*` skill directories — delete only those. **Leave the
+standard BMAD skills alone**; install never touched them.
+
+```bash
+# claude reads from .claude/skills/ ; codex/gemini read from .agents/skills/
+rm -rf .claude/skills/bmad-auto-{dev,review,resolve,sweep,setup}
+rm -rf .agents/skills/bmad-auto-{dev,review,resolve,sweep,setup}
+```
+
+(Run only the line for the skill tree your CLIs use — drop the other.)
+
+### 4. Deregister the hooks
+
+`init` **merged** its Stop-hook registration into each CLI's existing hook config, so these
+files must be **edited, not deleted** (they hold your own settings too). In each config below,
+remove the hook entry whose `command` contains `bmad_auto_hook.py`:
+
+- **claude** — `.claude/settings.json`
+- **codex** — `.codex/hooks.json`
+- **gemini** — `.gemini/settings.json`
+
+Edit only the registered CLIs. The `bmad_auto_hook.py` substring uniquely identifies the
+entries to strip; leave every other hook in place.
+
+### 5. Drop the gitignore lines
+
+`init` appended `.automator/runs/` and `.automator/cache/` to `.gitignore`. Remove those two
+lines (skip any your project relies on for other reasons).
+
+### 6. Unregister from `_bmad/` (BMAD-installer projects only)
+
+If you ran `/bmad-auto-setup`, it registered the module in your BMAD config. Remove the
+bmad-auto (`bauto`) entries from:
+
+- `_bmad/config.yaml` and `_bmad/config.user.yaml` — drop the bmad-auto module config block
+- `_bmad/module-help.csv` — drop the bmad-auto help rows
+
+uv + `init`-only projects never write to `_bmad/` and can skip this step.
+
+### 7. Uninstall the tool
+
+```bash
+uv tool uninstall bmad-auto
+```
+
+Confirm removal: `bmad-auto --version` should now fail with a command-not-found error. Repeat
+steps 1–6 in every project that used the tool — the tool install is machine-wide, but the
+state, skills, and hooks are per-project.

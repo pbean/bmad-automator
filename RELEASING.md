@@ -1,13 +1,9 @@
-# Releasing `bmad-automator`
+# Releasing `bmad-auto`
 
 One standardized flow. Cutting a release is: **pick a version → curate the
 CHANGELOG → run `prepare` → open a PR → merge.** Everything mechanical (version
 stamping, asset regeneration, tagging, the GitHub release) is automated, and the
 tag + release are created automatically once the PR merges to `main`.
-
-The fastest path is the `/bmad-release` skill (see [below](#the-bmad-release-skill)),
-which curates the changelog for you and then calls the engine. The skill is just a
-wrapper — the durable source of truth is `scripts/release.py` and this document.
 
 ## TL;DR
 
@@ -94,25 +90,6 @@ messages or raw info dumps**:
   id not found under the current project was treated as a prunable orphan and could
   match another project's live session. Sessions are now stamped with their project
   and cleanup only prunes its own.
-```
-
-## The `/bmad-release` skill
-
-`/bmad-release` is a **development-only** skill for working on `bmad-automator`
-itself. It takes the target version, runs `release.py commits`, curates the
-CHANGELOG entry, shows it to you for approval, then runs `release.py prepare`.
-
-It is **not** part of the shipped BMAD module and is never installed by
-`bmad-auto init` — it is absent from `MODULE_SKILLS`, `marketplace.json`,
-`module.yaml`, and `_bmad/module-help.csv`.
-
-Because `.claude/` is gitignored, the canonical skill source is tracked at
-`dev/skills/bmad-release/`. Mirror it into your local workspace so Claude Code can
-load it:
-
-```bash
-mkdir -p .claude/skills/bmad-release
-cp dev/skills/bmad-release/SKILL.md .claude/skills/bmad-release/SKILL.md
 ```
 
 ## Local pre-flight

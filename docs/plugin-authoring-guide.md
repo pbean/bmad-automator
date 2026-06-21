@@ -158,6 +158,10 @@ prompt = "/lint-sweep {story_key}"
 blocking = false           # true: a failed session defers the unit
 ```
 
+Declare `<name>_enabled` / `<name>_blocking` settings to let operators disable a
+step or flip its gate per run — see
+[Making a workflow configurable](#making-a-workflow-configurable).
+
 ### `{scripts}` substitution
 
 In any hook `cmd` or workflow `prompt`, `{scripts}` expands to the plugin's own
@@ -456,6 +460,72 @@ blocking = false           # true: a non-completed session defers the unit
   fires whenever the plugin is discovered.
 
 `registry.provided_workflows()` lists declared workflow names for introspection.
+
+### Making a workflow configurable
+
+The `blocking` and (in effect) on/off state a workflow declares in its manifest
+are **defaults**. A plugin can let an operator tune them per run — disable a step
+or flip its gate — by declaring settings that follow a naming convention. No
+Python is required; the registry reads the resolved settings when it injects.
+
+The convention, keyed on the workflow's `name`:
+
+| Setting key       | Type | Effect                                                              |
+| ----------------- | ---- | ------------------------------------------------------------------- |
+| `<name>_enabled`  | bool | When explicitly `false`, the step is **dropped** — no session runs. |
+| `<name>_blocking` | bool | **Overrides** the manifest's `blocking` flag for that workflow.     |
+
+**Default semantics — absent settings change nothing.** The overlay only acts on
+a setting that is present and (for `_enabled`) explicitly `false`; `_blocking`
+falls back to the manifest value when unset. A plugin that declares none of these
+settings is **byte-identical** to one written before the feature existed.
+
+**Declare the matching `[[settings]]`** so the keys are first-class (typed,
+documented, surfaced in the settings UI) and operators can flip them from
+`[plugins.<plugin>]` in `policy.toml`:
+
+```toml
+# A gate step: generated advisory by default, an operator can make it block.
+[workflows.nfr]
+stage = "post_review_result"
+role = "review"
+prompt = "Run the NFR assessment for the changes in {story_key}."
+blocking = false              # manifest default: advisory
+
+[[settings]]
+key = "nfr_enabled"           # <name>_enabled  -> drop the step when false
+type = "bool"
+default = true
+help = "Run the NFR workflow after review."
+
+[[settings]]
+key = "nfr_blocking"          # <name>_blocking -> override the blocking flag
+type = "bool"
+default = false
+help = "Escalate the unit when the NFR gate is not satisfied."
+```
+
+An operator then opts in from policy:
+
+```toml
+[plugins.tea]
+nfr_blocking = true           # flip the advisory gate to blocking
+td_enabled   = false          # turn the test-design step off entirely
+```
+
+**Interaction with the blocking / defer path.** `<name>_blocking` feeds the same
+`WorkflowSpec.blocking` the engine already honors: a blocking workflow whose
+session does not **complete** defers the unit through the existing defer
+primitive (see [Workflows](#workflows-provides) above). The overlay only changes
+which value that flag holds at injection time — it adds no new control flow. (For
+quality gating on a workflow's _output_ rather than its completion, do that in an
+in-process `on_pre_commit` hook; the manifest `blocking` flag only checks session
+completion.)
+
+**Disabling every step at a stage is free.** When a setting turns off the last
+remaining workflow at a stage, that stage drops out of `registry.workflow_stages()`
+too, so the engine's O(1) per-stage injection guard skips it entirely — the same
+as if no workflow had ever been declared there.
 
 ---
 
